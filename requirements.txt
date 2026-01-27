@@ -7,3 +7,5 @@ scikit-learn
 xgboost
 fredapi
 scipy
+matplotlib
+seaborn
