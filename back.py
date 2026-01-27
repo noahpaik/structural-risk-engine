@@ -843,32 +843,76 @@ class StructuralRiskDetector2026:
         return df
         
     
+    def apply_trend_filter(self, df, raw_probs):
+        """
+        [Strategy 3] 추세 필터 (Regime Filter)
+        - Bull Market (Price > MA200): Threshold 0.60 (둔감)
+        - Bear Market (Price < MA200): Threshold 0.25 (민감)
+        """
+        try:
+            # SPY 데이터 로드 (Aligned with df)
+            start_date = df.index[0] - pd.Timedelta(days=365) # MA200을 위한 버퍼
+            end_date = df.index[-1] + pd.Timedelta(days=5)
+            
+            spy = yf.download('SPY', start=start_date, end=end_date, progress=False)
+            if isinstance(spy.columns, pd.MultiIndex): spy.columns = spy.columns.get_level_values(0)
+            spy_close = spy['Close'] if 'Close' in spy.columns else spy.iloc[:, 0]
+            if isinstance(spy_close, pd.DataFrame): spy_close = spy_close.iloc[:, 0]
+            
+            if spy_close.index.tz is not None:
+                spy_close.index = spy_close.index.tz_localize(None)
+            
+            # MA200 & Bull Market
+            ma200 = spy_close.rolling(200).mean()
+            is_bull = (spy_close > ma200).reindex(df.index).ffill().fillna(True) # Fill NaT/NaN as Bull (conservative)
+            
+            final_pred = []
+            
+            for i in range(len(df)):
+                prob = raw_probs[i]
+                bull = is_bull.iloc[i]
+                
+                # Dynamic Threshold
+                threshold = 0.60 if bull else 0.25
+                
+                final_pred.append(1 if prob >= threshold else 0)
+                
+            return np.array(final_pred), is_bull
+            
+        except Exception as e:
+            print(f"[WARN] Trend Filter Failed: {e}")
+            # Fallback to Fixed Threshold 0.25
+            return (raw_probs >= 0.25).astype(int), pd.Series(True, index=df.index)
+
+    def optimize_threshold(self, y_true, y_proba):
+        """
+        [Strategy 2] 최적 F1 Threshold 탐색
+        """
+        precision, recall, thresholds = precision_recall_curve(y_true, y_proba)
+        # F1 Score
+        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-9)
+        best_idx = np.argmax(f1_scores)
+        
+        # thresholds is length N, precision/recall is N+1
+        if best_idx < len(thresholds):
+            return thresholds[best_idx], f1_scores[best_idx]
+        return 0.5, 0.0
+
     def train_model(self, df, split_date='2024-01-01', target_recall=0.55, max_fpr=0.40, test_size=0.2):
         """
-        XGBoost Walk-Forward 학습 (Advanced Tuning)
-        - Time-Decay Sample Weights
-        - F-Score Maximization (F2 Score: Recall biased)
+        XGBoost Walk-Forward 학습 (Precision Tuning Applied)
         """
         print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 (Advanced Tuning)")
-        if split_date:
-            print(f"   Split Date: {split_date}")
-        else:
-            print(f"   Test Size: {test_size:.0%}")
+        print(f"[AI] 모델 학습 시작 (Precision Tuning: Regime Filter)")
         
         X = df.drop('crash', axis=1)
         y = df['crash']
         
-        # [OK] 날짜 기준 분할 우선
+        # [OK] 날짜 기준 분할
         if split_date:
             split_ts = pd.Timestamp(split_date)
-            post_split = df.index[df.index >= split_ts]
-            if not post_split.empty:
-                split_idx = df.index.get_loc(post_split[0])
-                print(f"[OK] 강제 분할 시점: {split_ts.date()}")
-            else:
-                print(f"[WARN] Split date {split_date} out of range, fallback to ratio")
-                split_idx = int(len(df) * (1 - test_size))
+            # Ensure split_ts is within range logic handled by slice
+            split_idx = len(df[df.index < split_ts])
         else:
              split_idx = int(len(df) * (1 - test_size))
         
@@ -877,36 +921,28 @@ class StructuralRiskDetector2026:
         
         print(f"학습: {len(X_train)} ({X_train.index[0].date()} ~ {X_train.index[-1].date()})")
         print(f"검증: {len(X_test)} ({X_test.index[0].date()} ~ {X_test.index[-1].date()})")
-        print(f"원본: Normal={len(y_train[y_train==0])}, Crash={len(y_train[y_train==1])}")
-        
-        # 1. Class Imbalance Handling
-        if y_train.sum() == 0:
-            print("[WARN] 학습 데이터에 Crash 없음. Dummy Model 사용.")
-            pos_weight = 1.0
-        else:
-            # [USER REQUEST] 가중치 10으로 고정 (Overfitting 방지)
-            pos_weight = 10.0
-            print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
-        # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
-        # 최근 데이터에 더 높은 가중치를 부여하여 Concept Drift 완화
+        # 1. Class Imbalance (Strategy 1: Scale 8.0 ~ 10.0)
+        pos_weight = 8.0 
+        
+        # 2. Time-Decay Sample Weights
         weights = np.linspace(0.5, 1.5, len(X_train))
         
         # XGBoost 학습
         self.model = XGBClassifier(
             n_estimators=300,        
-            max_depth=4,             # [TUNING] 5->4 과적합 방지
-            learning_rate=0.05,      # [TUNING] 0.03->0.05 (or keep low) - User asked 0.05
+            max_depth=4,             
+            learning_rate=0.05,      
             subsample=0.8,
             colsample_bytree=0.8,
-            scale_pos_weight=8.0,    # [TUNING] 10->8 하향 조정
+            scale_pos_weight=pos_weight,  # [Strategy 1] 8.0
             random_state=42,
             eval_metric='logloss'
         )
         
         self.model.fit(
             X_train, y_train,
-            sample_weight=weights,   # [OK] 가중치 적용
+            sample_weight=weights,
             eval_set=[(X_test, y_test)],
             verbose=False
         )
@@ -914,146 +950,58 @@ class StructuralRiskDetector2026:
         # 예측 확률
         y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
-        # [SMOOTHING] EMA 20 적용 (Noise Reduction)
+        # [SMOOTHING] EMA 20 적용
         y_pred_proba = pd.Series(y_pred_proba).ewm(span=20).mean().values
         
-        # 3. Dynamic Thresholding (Maximize F2-Score)
-        # F2-Score: Recall에 Precision보다 2배 더 가중치 (Beta=2)
-        precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
+        # [Strategy 2] Thresh Opt (Reference only, mainly used for analysis)
+        opt_thresh, best_f1 = self.optimize_threshold(y_test, y_pred_proba)
+        print(f"[TARGET] Optimal F1 Threshold: {opt_thresh:.3f} (F1: {best_f1:.3f})")
         
-        best_f2 = 0
-        optimal_threshold = 0.5
+        # [Strategy 3] Regime Trend Filter (Dynamic Threshold)
+        # Apply filter on Test Set
+        y_pred_refined, bull_market_test = self.apply_trend_filter(X_test, y_pred_proba)
         
-        # 분모가 0이 되는 것을 방지
-        numerator = (1 + 2**2) * (precision * recall)
-        denominator = (2**2 * precision) + recall
-        f2_scores = np.divide(numerator, denominator, out=np.zeros_like(numerator), where=denominator!=0)
+        # Apply filter on Full Set (for visualization)
+        y_pred_proba_full = self.model.predict_proba(X)[:, 1]
+        y_pred_proba_full = pd.Series(y_pred_proba_full).ewm(span=20).mean().values
+        y_pred_full_refined, bull_market_full = self.apply_trend_filter(X, y_pred_proba_full)
         
-        # Find best threshold
-        if len(thresholds) > 0:
-            best_idx = np.argmax(f2_scores[:-1]) # thresholds length = recall length - 1 (usually)
-            # scikit-learn precision_recall_curve: thresholds is shorter by 1
-            if best_idx < len(thresholds):
-                best_f2 = f2_scores[best_idx]
-                optimal_threshold = thresholds[best_idx]
-        
-        # [USER REQUEST] Threshold 0.25 고정 (황금비)
-        optimal_threshold = 0.25
-        print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
-        
-        self.threshold = optimal_threshold
-        
-        y_pred = (y_pred_proba >= optimal_threshold).astype(int)
+        self.threshold = 0.25 # Base threshold logic used inside filter (0.25 or 0.60)
         
         # 평가
         auc = roc_auc_score(y_test, y_pred_proba)
         
-        # print(f"{'='*70}")
-        # print(f"[METRICS] 검증 성과")
-        # print(f"{'='*70}")
-        # print(f"AUC: {auc:.3f}")
-        # print(f"\n{classification_report(y_test, y_pred, target_names=['Normal', 'Crash'])}")
+        # Confusion Matrix using REFINED prediction
+        cm = confusion_matrix(y_test, y_pred_refined)
         
-        # Confusion Matrix
-        cm = confusion_matrix(y_test, y_pred)
-        # print(f"Confusion Matrix:")
-        # print(f"  TN: {cm[0,0]:4d}  FP: {cm[0,1]:4d}")
-        # print(f"  FN: {cm[1,0]:4d}  TP: {cm[1,1]:4d}")
-        
-        # [OK] NEW: 신호 발생 날짜 분석
-        # print("\n" + "="*70)
-        # print("[DATE] 신호 발생 상세 분석")
-        # print("="*70)
-        
-        # False Positives (모델 경고 + 실제 정상)
-        fp_indices = np.where((y_pred == 1) & (y_test == 0))[0]
-        fp_dates = X_test.index[fp_indices]
-        
-        # if len(fp_dates) > 0:
-            # print(f"\n[WARN] 경고 신호 발생 (FP={len(fp_dates)}개):")
-            # 연도별로 그룹화
-            # fp_by_year = {}
-            # for date in fp_dates:
-            #     year = date.year
-            #     if year not in fp_by_year:
-            #         fp_by_year[year] = []
-            #     fp_by_year[year].append(date)
-            
-            # for year in sorted(fp_by_year.keys()):
-                # print(f"\n  [{year}년]: {len(fp_by_year[year])}개")
-                # 처음 10개만 출력
-                # dates_to_show = fp_by_year[year][:10]
-                # if len(fp_by_year[year]) > 10:
-        # print(f"    {', '.join([str(d.month).zfill(2) + '-' + str(d.day).zfill(2) for d in dates_to_show])} ... (총 {len(fp_by_year[year])}개)")
-        # print(f"    {', '.join([str(d.month).zfill(2) + '-' + str(d.day).zfill(2) for d in dates_to_show])}")
-        
-        # True Positives
-        tp_indices = np.where((y_pred == 1) & (y_test == 1))[0]
-        tp_dates = X_test.index[tp_indices]
-        
-        # if len(tp_dates) > 0:
-            # print(f"\n[OK] 정확한 폭락 예측 (TP={len(tp_dates)}개):")
-            # for date in tp_dates:
-                # features = X_test.loc[date]
-                # top_features = features.nlargest(3)
-                # date_str = f"{date.year}-{str(date.month).zfill(2)}-{str(date.day).zfill(2)}"
-                # print(f"  {date_str}: 주요 신호 = {', '.join([f'{k}({v:.2f})' for k, v in top_features.items()])}")
-        
-        # False Negatives
-        fn_indices = np.where((y_pred == 0) & (y_test == 1))[0]
-        fn_dates = X_test.index[fn_indices]
-        
-        # if len(fn_dates) > 0:
-            # print(f"\n[ERROR] 놓친 폭락 (FN={len(fn_dates)}개):")
-            # for date in fn_dates[:10]:  # 처음 10개만
-                # date_str = f"{date.year}-{str(date.month).zfill(2)}-{str(date.day).zfill(2)}"
-                # print(f"  {date_str}")
-            # if len(fn_dates) > 10:
-                # print(f"  ... 외 {len(fn_dates)-10}개")
-        
-        # print("="*70 + "\n")
-        
-        # [OK] 백테스트 결과 저장 (Streamlit용)
+        # [OK] 백테스트 결과 저장
         from sklearn.metrics import accuracy_score, f1_score
         self.backtest_results = {
             'auc': auc,
-            'recall': recall_score(y_test, y_pred),
-            'precision': precision_score(y_test, y_pred, zero_division=0),
-            'f1': f1_score(y_test, y_pred, zero_division=0),
-            'accuracy': accuracy_score(y_test, y_pred),
+            'recall': recall_score(y_test, y_pred_refined),
+            'precision': precision_score(y_test, y_pred_refined, zero_division=0),
+            'f1': f1_score(y_test, y_pred_refined, zero_division=0),
+            'accuracy': accuracy_score(y_test, y_pred_refined),
             'confusion_matrix': cm,
-            'threshold': optimal_threshold,
+            'threshold': "Dynamic (0.25/0.60)",
             'y_test': y_test,
-            'y_pred': y_pred,
+            'y_pred': y_pred_refined,
             'y_pred_proba': y_pred_proba,
             'X_test': X_test,
-            'split_date': split_date
-        }
-        
-        # Feature Importance
-        importances = pd.DataFrame({
-            'feature': X.columns,
-            'importance': self.model.feature_importances_
-        }).sort_values('importance', ascending=False).head(15)
-        
-        # print(f"\n[SEARCH] 상위 15개 Feature Importance:")
-        # print(importances.to_string(index=False))
-        # print(f"{'='*70}\n")
-        
-        # Predict on FULL dataset for visualization
-        y_pred_proba_full = self.model.predict_proba(X)[:, 1]
-        
-        # [SMOOTHING] EMA 20 적용
-        y_pred_proba_full = pd.Series(y_pred_proba_full).ewm(span=20).mean().values
-
-        # 저장
-        self.backtest_results.update({
+            'split_date': split_date,
+            
+            # Full History
             'X_full': X,
             'y_full': y,
             'y_pred_proba_full': y_pred_proba_full,
+            'y_pred_full_refined': y_pred_full_refined,
+            'bull_market_full': bull_market_full,
             'test_start_date': X_test.index[0],
-            'importances': importances
-        })
+            'importances': pd.DataFrame({
+                'feature': X.columns,
+                'importance': self.model.feature_importances_
+            }).sort_values('importance', ascending=False)
+        }
         
         return self.model
     
