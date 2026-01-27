@@ -30,7 +30,7 @@ st.sidebar.markdown("---")
 # 모델 초기화 (캐시)
 # 모델 초기화 (캐시)
 @st.cache_resource
-def load_detector_v18():
+def load_detector_v19():
     """모델 로드"""
     try:
         # 1. Streamlit Secrets (Cloud 배포용)
@@ -47,25 +47,25 @@ def load_detector_v18():
     return StructuralRiskDetector2026(fred_api_key=api_key)
 
 @st.cache_data(ttl=3600)
-def load_data_v18(_detector):
+def load_data_v19(_detector):
     """데이터 로드 (모델 학습 제외)"""
     with st.spinner('데이터 로딩 중...'):
         df = _detector.prepare_training_data(start_date='2018-01-01', end_date='2026-01-27')
     return df
 
 @st.cache_resource
-def run_training_v18(_detector, df):
+def run_training_v19(_detector, df):
     """모델 학습 (별도 캐시)"""
     with st.spinner('모델 학습 및 백테스트 중...'):
         _detector.train_model(df, split_date='2023-01-01')
     return _detector
 
 # 모델 및 데이터 로드
-detector = load_detector_v18()
+detector = load_detector_v19()
 if detector is None:
     st.stop()
-df = load_data_v18(detector)
-detector = run_training_v18(detector, df)
+df = load_data_v19(detector)
+detector = run_training_v19(detector, df)
 
 # [DEBUG] 데이터 로드 확인
 # st.success(f"데이터 로드 완료 (Shape: {df.shape})")
@@ -142,7 +142,7 @@ if page == "🏠 Home - 현재 위험":
             }
         ))
         fig_gauge.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20))
-        st.plotly_chart(fig_gauge, use_container_width=True)
+        st.plotly_chart(fig_gauge, width="stretch")
     
     with col3:
         st.metric(
@@ -156,7 +156,7 @@ if page == "🏠 Home - 현재 위험":
             marker_colors=['steelblue', 'lightgray']
         )])
         fig_pie.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20), showlegend=False)
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width="stretch")
     
     st.markdown("---")
     
@@ -180,7 +180,7 @@ if page == "🏠 Home - 현재 위험":
         yaxis_title="값",
         height=400
     )
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.plotly_chart(fig_bar, width="stretch")
 
 # ==========================================
 # Page 2: Backtest 결과
@@ -280,7 +280,7 @@ elif page == "📈 Backtest 결과":
                 fig_full.add_vline(x=test_start_date, line_dash="dash", line_color="blue", row=i, col=1)
 
         fig_full.update_layout(height=1000, title_text="Structural Risk Analysis (Full History)", showlegend=True)
-        st.plotly_chart(fig_full, use_container_width=True)
+        st.plotly_chart(fig_full, width="stretch")
     
     st.markdown("---")
     
@@ -316,7 +316,7 @@ elif page == "📈 Backtest 결과":
             title="Confusion Matrix",
             yaxis=dict(autorange="reversed") # To match standard matrix layout
         )
-        st.plotly_chart(fig_cm, use_container_width=True)
+        st.plotly_chart(fig_cm, width="stretch")
 
     # 신호 발생 통계
     st.subheader("📅 연도별 신호 통계")
@@ -349,7 +349,7 @@ elif page == "📈 Backtest 결과":
             fig_stats.add_trace(go.Bar(name='FN (놓침)', x=years, y=fn_list, marker_color='red'))
             
             fig_stats.update_layout(barmode='stack', title="연도별 예측 상세", xaxis_title="연도", yaxis_title="건수")
-            st.plotly_chart(fig_stats, use_container_width=True)
+            st.plotly_chart(fig_stats, width="stretch")
             
         except Exception as e:
             st.error(f"통계 차트 생성 오류: {e}")
@@ -395,7 +395,7 @@ elif page == "🎯 피처 신호":
                 height=300,
                 hovermode='x unified'
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
     else:
         st.info("피처를 선택하세요")
 
@@ -428,10 +428,10 @@ elif page == "🔬 모델 진단":
             yaxis_title="Feature",
             height=500
         )
-        st.plotly_chart(fig_imp, use_container_width=True)
+        st.plotly_chart(fig_imp, width="stretch")
         
         # 테이블
-        st.dataframe(importances, use_container_width=True)
+        st.dataframe(importances, width="stretch")
     else:
         st.warning("모델이 학습되지 않았습니다.")
 
