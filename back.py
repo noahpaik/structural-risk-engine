@@ -724,72 +724,41 @@ class StructuralRiskDetector2026:
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
         
-        # [OK] NEW: Velocity Features (변화 속도)
-        # 절대값보다 5일간의 변화량이 위기 감지에 핵심
+        # =========================================================
+        # [Step 2] Feature Reset: 기본으로 돌아가라
+        # =========================================================
+        # 복잡한 파생 변수 다 지우고, 딱 이거 5개만 씁니다.
+        # 이 5개가 안 되면 나머지는 다 소용없습니다.
         
-        # [OK] NEW: Feature Engineering (Back to Basic + Velocity)
-        # 복잡한 곱하기(Interaction) 다 삭제. 모델을 다시 단순하게 만듭니다.
-        
-        # 1. 속도(Velocity)만 추가 (이건 성능 확실함)
-        if 'volatility' in features.columns:
-            features['vol_velocity'] = features['volatility'].diff(5)
-            
-        if 'bond_stress' in features.columns:
-            features['bond_velocity'] = features['bond_stress'].diff(5)
-            
-        # NaN 제거 (필수)
-        features = features.dropna()
-        
-        # [USER REQUEST] Eco Surprise 영향력 축소 (De-powering)
-        # 1. 신호 강도(Magnitude) 50% 축소
-        if 'eco_surprise' in features.columns:
-             features['eco_surprise'] = features['eco_surprise'] * 0.5
-             
-        if 'eco_surprise_accel' in features.columns:
-             features['eco_surprise_accel'] = features['eco_surprise_accel'] * 0.5
-             
-        # 2. 지속기간(Duration)에 로그(Log) 적용 (선형 -> 로그형 감쇄)
-        if 'eco_surprise_duration' in features.columns:
-             features['eco_surprise_duration'] = np.log1p(features['eco_surprise_duration'])
+        selected_features = [
+            'volatility', 
+            'bond_stress', 
+            'net_liquidity', 
+            'momentum', 
+            'liquidity'
+        ]
+        # Check if columns exist
+        existing_cols = [c for c in selected_features if c in features.columns]
+        features = features[existing_cols].dropna()
              
         returns = spy_close.pct_change()
         
-        # [OK] VIX 데이터 로드 (급등 확인용)
-        try:
-            vix_df = yf.download('^VIX', start=start_date, progress=False)
-            if isinstance(vix_df.columns, pd.MultiIndex):
-                vix_df.columns = vix_df.columns.get_level_values(0)
-            if 'Close' in vix_df.columns:
-                vix_close = vix_df['Close']
-            else:
-                vix_close = vix_df.iloc[:, 0]
-            if isinstance(vix_close, pd.DataFrame):
-                vix_close = vix_close.iloc[:, 0]
-            
-            # VIX 급등 조건: 5일 후 VIX가 20일 이동평균의 1.5배 초과
-            vix_spike = (vix_close > vix_close.rolling(20).mean() * 1.5).shift(-5)
-            # 인덱스 정렬
-            vix_spike = vix_spike.reindex(returns.index).fillna(False)
-            
-        except Exception as e:
-            print(f"[WARN] VIX load failed for label generation: {e}")
-            vix_spike = pd.Series(False, index=returns.index)
-
-        # [OK] 엄격해진 레이블 (Option 1 적용)
-        # 1. 향후 20일 -10% (기존 -8%에서 강화)
-        future_dd_20 = returns.rolling(20).apply(
-            lambda x: (1 + x).cumprod().min() - 1
-        ).shift(-20)
+        # =========================================================
+        # [Step 1] Labeling Repair: 정답지 현실화
+        # =========================================================
+        # 기존: "20일 뒤에 -10% 손실이어야 폭락이다" (너무 느림)
+        # 수정: "향후 10일 안에 고점 대비 -5%만 빠져도 폭락이다" (MDD 기준)
         
-        # 2. 향후 10일 -7% AND VIX 급등
-        future_10d = returns.rolling(10).sum().shift(-10)
+        # MDD(Maximum Drawdown) 계산
+        indexer = pd.api.indexers.FixedForwardWindowIndexer(window_size=10)
+        rolling_min = spy_close.rolling(window=indexer).min()
+        current_price = spy_close
         
-        # 통합
-        crash_labels = (
-            (future_dd_20 < -0.07) | # [RELAXED] -10% -> -7% 로 완화
-            ((future_10d < -0.07) & vix_spike)
-        ).astype(int)
+        # 향후 10일 내 최대 하락폭
+        future_mdd = (rolling_min - current_price) / current_price
         
+        # [핵심] 기준을 -5%로 완화하여 2024년 급락을 '정답'으로 인정
+        crash_labels = (future_mdd < -0.05).astype(int)
         crash_labels.name = 'crash'
         
         # [수정] 데이터 병합 (Left Join으로 최신 데이터 보존)
@@ -945,19 +914,22 @@ class StructuralRiskDetector2026:
         # 2. Time-Decay Sample Weights
         weights = np.linspace(0.5, 1.5, len(X_train))
         
-        # XGBoost 학습 (Dual Threshold Strategy - Recall Focus)
+        # =========================================================
+        # [Step 3] Model Reset: "중용(Golden Mean)" 설정
+        # =========================================================
+        # 극단적인 값(25.0, 0.2 등)을 버리고 가장 표준적인 값 사용
+        
         self.model = XGBClassifier(
-            n_estimators=200,        
-            max_depth=3,             # [복구] 5 -> 3 (과적합 방지, 단순화)
-            learning_rate=0.05,      
+            n_estimators=300,
+            max_depth=4,             # 3(너무 단순) ~ 5(너무 복잡)의 중간
+            learning_rate=0.03,
             
-            # [복구] 가중치를 다시 높여 Recall 확보
-            # 10.0 -> 25.0 (일단 폭락을 놓치지 않도록 설정)
-            scale_pos_weight=25.0,    
+            # [복구 핵심] 가중치 10으로 고정
+            scale_pos_weight=10.0,   
             
-            # [복구] 규제 제거 (자유롭게 학습하도록 유도)
-            gamma=0,               
-            min_child_weight=1,      
+            # 규제 적당히
+            gamma=0.5,
+            min_child_weight=3,
             
             subsample=0.8,
             colsample_bytree=0.8,
@@ -967,45 +939,40 @@ class StructuralRiskDetector2026:
             eval_metric='auc'
         )
         
+        # 학습 및 예측
         self.model.fit(
-            X_train, y_train,
-            sample_weight=weights,
-            eval_set=[(X_test, y_test)],
+            X_train, y_train, 
+            sample_weight=weights, 
+            eval_set=[(X_test, y_test)], 
             verbose=False
         )
+        y_proba = self.model.predict_proba(X_test)[:, 1]
         
-        # 확률 예측
-        y_pred_proba = self.model.predict_proba(X_test)[:, 1]
+        # =========================================================
+        # [Step 4] Dynamic Threshold (안전장치)
+        # =========================================================
         
-        # [핵심 필살기] VIX 레짐에 따른 이중 잣대 적용
-        # X_test에서 'volatility' 컬럼을 가져옴 (인덱스 매칭 필요)
-        # Z-score 기준이므로 0보다 크면 '고변동성', 작으면 '저변동성'
+        # VIX가 높으면(시장 공포) 기준을 높여서 휩소 방지
+        # VIX가 낮으면(시장 평온) 기준을 낮춰서 기습 하락 방지
         
+        # Volatility 컬럼 인덱스 찾기
         try:
-            vol_col_idx = list(X_test.columns).index('volatility')
-            vol_values = X_test.iloc[:, vol_col_idx].values
-        except ValueError:
-            print("[WARN] 'volatility' 컬럼을 찾을 수 없어 기본 임계값 적용")
-            vol_values = np.zeros(len(y_pred_proba)) # Fallback
+            vol_idx = list(X_test.columns).index('volatility')
+            vol_vals = X_test.iloc[:, vol_idx].values
+        except:
+             vol_vals = np.zeros(len(y_proba))
 
         final_preds = []
-        
-        for i in range(len(y_pred_proba)):
-            prob = y_pred_proba[i]
-            vol = vol_values[i]
-            
-            # Case A: 시장이 공포에 질려있을 때 (High Volatility Regime)
-            # 이미 시장이 무서워하므로, 모델은 '확실할 때만(0.7)' 경고해야 함 (휩소 방지)
-            if vol > 0.5: 
-                threshold = 0.70
-                
-            # Case B: 시장이 평온할 때 (Low Volatility Regime)
-            # 갑작스런 충격을 잡아야 하므로, 기준을 낮춰서(0.3) 예민하게 반응
+        for i in range(len(y_proba)):
+            # 시장 변동성이 높으면(>1.0), 웬만하면 믿지 마라 (Threshold 0.65)
+            if vol_vals[i] > 1.0:
+                threshold = 0.65
+            # 시장이 조용하면(<=1.0), 조금만 이상해도 반응해라 (Threshold 0.35)
             else:
-                threshold = 0.30
+                threshold = 0.35
                 
-            final_preds.append(1 if prob >= threshold else 0)
-        
+            final_preds.append(1 if y_proba[i] >= threshold else 0)
+            
         final_preds = np.array(final_preds)
         
         # ---------------------------------------------------------
@@ -1018,13 +985,13 @@ class StructuralRiskDetector2026:
         prec = precision_score(y_test, final_preds, zero_division=0)
         f1 = f1_score(y_test, final_preds, zero_division=0)
         
-        print(f"\n🎯 [Regime-Based 복구 결과]")
+        print(f"\n🎯 [Emergency Kit 복구 결과]")
         print(f"   AUC: {auc:.4f}")
         print(f"   Recall: {rec:.1%} (목표: 50%+)")
         print(f"   Precision: {prec:.1%} (목표: 40%+)")
         print(f"   F1 Score: {f1:.3f}")
         
-        self.threshold = 0.30 # Base threshold for reference
+        self.threshold = 0.35 # Base threshold reference
         
         # Confusion Matrix
         cm = confusion_matrix(y_test, final_preds)
@@ -1037,8 +1004,8 @@ class StructuralRiskDetector2026:
             'f1': f1,
             'accuracy': accuracy_score(y_test, final_preds),
             'confusion_matrix': cm,
-            'threshold': 0.30, # Dynamic
-            'threshold_desc': "Dual Regime (0.3/0.7)",
+            'threshold': 0.35, 
+            'threshold_desc': "Dynamic (0.35/0.65)",
             'y_test': y_test,
             'y_pred': final_preds,
             'y_pred_proba': y_pred_proba,
@@ -1056,7 +1023,7 @@ class StructuralRiskDetector2026:
             }).sort_values('importance', ascending=False)
         }
         
-        # Use Dual Threshold logic for Full History predictions as well
+        # Use Dynamic Threshold logic for Full History predictions
         y_pred_proba_full = self.backtest_results['y_pred_proba_full']
         if 'volatility' in X.columns:
             vol_full = X['volatility'].values
@@ -1065,10 +1032,9 @@ class StructuralRiskDetector2026:
             
         final_preds_full = []
         for i in range(len(y_pred_proba_full)):
-            prob = y_pred_proba_full[i]
             vol = vol_full[i]
-            thresh = 0.70 if vol > 0.5 else 0.30
-            final_preds_full.append(1 if prob >= thresh else 0)
+            thresh = 0.65 if vol > 1.0 else 0.35
+            final_preds_full.append(1 if y_pred_proba_full[i] >= thresh else 0)
             
         self.backtest_results['y_pred_full_refined'] = np.array(final_preds_full)
         
