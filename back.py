@@ -633,11 +633,14 @@ class StructuralRiskDetector2026:
     # LAYER 5: 통합 및 모델 학습
     # ============================================
     
-    # [OK] 핵심 수정: 미래 데이터까지 로드 (Updated 2026-01-26)
-    def prepare_training_data(self, start_date='2023-01-01', end_date='2026-01-26'):
+    # [OK] 핵심 수정: 미래 데이터까지 로드 (Updated dynamically)
+    def prepare_training_data(self, start_date='2023-01-01', end_date=None):
         """
         전체 Feature 준비 (미래 데이터 확보 강화)
         """
+        if end_date is None:
+            end_date = pd.Timestamp.now().strftime('%Y-%m-%d')
+            
         print(f"\n{'='*70}")
         print(f"[DATA] 데이터 준비: {start_date} ~ {end_date}")
         print(f"{'='*70}\n")
