@@ -719,6 +719,10 @@ class StructuralRiskDetector2026:
         
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
+        
+        # [USER REQUEST] eco_surprise 관련 피처 제거 (Overfitting 방지)
+        drop_cols = ['eco_surprise', 'eco_surprise_duration', 'eco_surprise_accel']
+        features = features.drop(columns=[c for c in drop_cols if c in features.columns], errors='ignore')
              
         returns = spy_close.pct_change()
         
@@ -844,8 +848,8 @@ class StructuralRiskDetector2026:
             print("[WARN] 학습 데이터에 Crash 없음. Dummy Model 사용.")
             pos_weight = 1.0
         else:
-            # [SENSITIVITY BOOST] 가중치 5 배 적용 (Aggressive Tuning)
-            pos_weight = (len(y_train[y_train==0]) / len(y_train[y_train==1])) * 5.0
+            # [USER REQUEST] 가중치 10으로 고정 (Overfitting 방지)
+            pos_weight = 10.0
             print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
         # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
@@ -897,12 +901,9 @@ class StructuralRiskDetector2026:
                 best_f2 = f2_scores[best_idx]
                 optimal_threshold = thresholds[best_idx]
         
-        print(f"[TARGET] Dynamic Threshold (Max F2={best_f2:.3f}): {optimal_threshold:.3f}")
-        
-        # [OK] 안전 장치: 너무 낮은 Threshold 방지 (최소 0.10은 유지)
-        if optimal_threshold < 0.25:
-             # print(f"[WARN] Calculated threshold {optimal_threshold:.3f} is too low. Enforcing floor 0.25") 
-             optimal_threshold = 0.25
+        # [USER REQUEST] Threshold 0.40 고정
+        optimal_threshold = 0.40
+        print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
         
