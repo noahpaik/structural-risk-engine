@@ -754,7 +754,7 @@ class StructuralRiskDetector2026:
         
         # 통합
         crash_labels = (
-            (future_dd_20 < -0.10) |
+            (future_dd_20 < -0.07) | # [RELAXED] -10% -> -7% 로 완화
             ((future_10d < -0.07) & vix_spike)
         ).astype(int)
         
@@ -897,9 +897,9 @@ class StructuralRiskDetector2026:
         print(f"[TARGET] Dynamic Threshold (Max F2={best_f2:.3f}): {optimal_threshold:.3f}")
         
         # [OK] 안전 장치: 너무 낮은 Threshold 방지 (최소 0.10은 유지)
-        if optimal_threshold < 0.05:
-             # print(f"[WARN] Calculated threshold {optimal_threshold:.3f} is too low. Enforcing floor 0.05") # OSError workaround
-             optimal_threshold = 0.05
+        if optimal_threshold < 0.25:
+             # print(f"[WARN] Calculated threshold {optimal_threshold:.3f} is too low. Enforcing floor 0.25") 
+             optimal_threshold = 0.25
         
         self.threshold = optimal_threshold
         
