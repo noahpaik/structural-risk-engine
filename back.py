@@ -773,23 +773,46 @@ class StructuralRiskDetector2026:
         
         crash_labels.name = 'crash'
         
-        # [OK] 수정: features와 crash_labels를 먼저 정렬
-        # end_date까지만 사용 (미래 데이터 제외)
-        valid_end = pd.Timestamp(end_date)
-        crash_labels = crash_labels[crash_labels.index <= valid_end]
-        features = features[features.index <= valid_end]
+        # [수정] 데이터 병합 (Left Join으로 최신 데이터 보존)
+        df_full = features.join(crash_labels, how='left')
         
-        df = features.join(crash_labels, how='inner')
-        df = df.dropna()
+        # 1. 학습/검증용 데이터 (라벨이 반드시 있어야 함 -> NaN 제거)
+        df_model = df_full.dropna()
         
-        if df.empty:
-            print("[ERROR] 데이터 통합 실패")
-            return df
+        # 2. 실시간 모니터링용 데이터 (최근 20일 포함, 라벨 NaN이어도 됨)
+        # 2026-01-27 기준 최신 데이터
+        current_data = df_full.iloc[[-1]] 
         
-        # 분할 검증
-        split_idx = int(len(df) * 0.8)
-        train_crashes = df.iloc[:split_idx]['crash'].sum()
-        test_crashes = df.iloc[split_idx:]['crash'].sum()
+        if df_model.empty:
+            print("[ERROR] 라벨 생성 후 데이터가 텅 비었습니다.")
+            return None
+
+        # [수정] 날짜 기반 분할 (최근 폭락을 검증셋에 포함시키기 위함)
+        # 2025년 3월 폭락을 검증하기 위해 2024년부터 검증
+        split_date = pd.Timestamp('2024-01-01')
+        
+        train = df_model[df_model.index < split_date]
+        test = df_model[df_model.index >= split_date]
+        
+        train_crashes = train['crash'].sum()
+        test_crashes = test['crash'].sum()
+        
+        print(f"\n{'='*70}")
+        print(f"[INFO] 데이터 분할 완료 (Split: {split_date.date()})")
+        print(f"{'='*70}")
+        print(f"학습 데이터: {len(train)} (폭락: {train_crashes})")
+        print(f"검증 데이터: {len(test)} (폭락: {test_crashes})")
+        
+        if test_crashes == 0:
+            print(f"⚠️  [경고] 검증 세트에 폭락 이벤트가 없습니다!")
+            print(f"    -> 2024년 이후 시장이 강세장이었거나, 라벨링 기준(-7%)이 너무 높습니다.")
+            print(f"    -> 테스트 목적이라면 라벨링 임계값을 -5%로 낮추거나, 분할 날짜를 2023년으로 당겨보세요.")
+        else:
+            print(f"✅ [성공] 검증 세트에 폭락 이벤트가 포함되었습니다.")
+            
+        # 모델 학습에는 df_model(전체)을 리턴하거나, train/test를 튜플로 리턴
+        # 여기서는 기존 호환성을 위해 df_model 리턴 (내부에서 TimeSeriesSplit 사용 권장)
+        return df_model
         
         print(f"\n{'='*70}")
         print(f"[INFO] 데이터 준비 완료")
