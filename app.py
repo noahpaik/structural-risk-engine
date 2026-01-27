@@ -50,7 +50,7 @@ def load_detector_v19():
 def load_data_v19(_detector):
     """데이터 로드 (모델 학습 제외)"""
     with st.spinner('데이터 로딩 중...'):
-        df = _detector.prepare_training_data(start_date='2018-01-01', end_date='2026-01-27')
+        df = _detector.prepare_training_data(start_date='2018-01-01', end_date='2026-01-26')
     return df
 
 @st.cache_resource

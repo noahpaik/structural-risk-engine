@@ -632,8 +632,8 @@ class StructuralRiskDetector2026:
     # LAYER 5: 통합 및 모델 학습
     # ============================================
     
-    # [OK] 핵심 수정: 미래 데이터까지 로드 (Updated 2026-01-27)
-    def prepare_training_data(self, start_date='2023-01-01', end_date='2026-01-27'):
+    # [OK] 핵심 수정: 미래 데이터까지 로드 (Updated 2026-01-26)
+    def prepare_training_data(self, start_date='2023-01-01', end_date='2026-01-26'):
         """
         전체 Feature 준비 (미래 데이터 확보 강화)
         """
@@ -780,7 +780,7 @@ class StructuralRiskDetector2026:
         df_model = df_full.dropna()
         
         # 2. 실시간 모니터링용 데이터 (최근 20일 포함, 라벨 NaN이어도 됨)
-        # 2026-01-27 기준 최신 데이터
+        # 2026-01-26 기준 최신 데이터
         current_data = df_full.iloc[[-1]] 
         
         if df_model.empty:
@@ -1157,7 +1157,7 @@ class StructuralRiskDetector2026:
     
     def get_current_assessment(self, df):
         """
-        현재 시점 위험 평가 (2026-01-27)
+        현재 시점 위험 평가 (2026-01-26)
         """
         if self.model is None:
             print("[WARN]  먼저 모델 학습 필요")
@@ -1194,7 +1194,7 @@ class StructuralRiskDetector2026:
         equity_weight = max(0, min(1, 1 - crash_proba * 1.5))
         
         print(f"\n{'='*70}")
-        print(f"[TARGET] 현재 위험 평가 (2026-01-27)")
+        print(f"[TARGET] 현재 위험 평가 (2026-01-26)")
         print(f"{'='*70}")
         print(f"20일 폭락 확률: {crash_proba:.1%}")
         print(f"위험 등급: {risk_level}")
@@ -1340,7 +1340,7 @@ if __name__ == "__main__":
     # 데이터 준비 (2018 ~ 2026)
     df = detector.prepare_training_data(
         start_date='2018-01-01',
-        end_date='2026-01-27'
+        end_date='2026-01-26'
     )
     
     if df is not None and not df.empty:
