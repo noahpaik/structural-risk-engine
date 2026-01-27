@@ -727,21 +727,17 @@ class StructuralRiskDetector2026:
         # [OK] NEW: Velocity Features (변화 속도)
         # 절대값보다 5일간의 변화량이 위기 감지에 핵심
         
+        # [OK] NEW: Feature Engineering (Back to Basic + Velocity)
+        # 복잡한 곱하기(Interaction) 다 삭제. 모델을 다시 단순하게 만듭니다.
+        
+        # 1. 속도(Velocity)만 추가 (이건 성능 확실함)
         if 'volatility' in features.columns:
             features['vol_velocity'] = features['volatility'].diff(5)
             
         if 'bond_stress' in features.columns:
             features['bond_velocity'] = features['bond_stress'].diff(5)
             
-        if 'net_liquidity' in features.columns:
-            features['liq_velocity'] = features['net_liquidity'].diff(5)
-            
-        # [OK] NEW: Crisis Synergy (Interaction) -> "공포와 채권이 만날 때" (AUC 치트키)
-        # 이 피처가 있어야 모델이 '심각성'을 구분해서 AUC가 오릅니다.
-        if 'volatility' in features.columns and 'bond_stress' in features.columns:
-            features['crisis_synergy'] = features['volatility'] * features['bond_stress']
-        
-        # NaN 제거 (Velocity 계산으로 인한 앞부분 결측 제거)
+        # NaN 제거 (필수)
         features = features.dropna()
         
         # [USER REQUEST] Eco Surprise 영향력 축소 (De-powering)
@@ -949,27 +945,26 @@ class StructuralRiskDetector2026:
         # 2. Time-Decay Sample Weights
         weights = np.linspace(0.5, 1.5, len(X_train))
         
-        # XGBoost 학습 (Golden Ratio Tuning)
+        # XGBoost 학습 (Dual Threshold Strategy)
         self.model = XGBClassifier(
-            n_estimators=300,        # 200 -> 300 (학습 기회 증가)
-            max_depth=5,             # 5 (깊이를 늘려 AUC 패턴 학습 허용)
-            learning_rate=0.03,      # 0.04 -> 0.03 (더 섬세하게)
+            n_estimators=200,        
+            max_depth=3,             # [복구] 5 -> 3 (과적합 방지)
+            learning_rate=0.05,      
             
-            # [밸런스 핵심 1] 가중치 재조정
-            # 4.0(너무 짬) -> 10.0 (적당히 퍼줌)
-            scale_pos_weight=10.0,    
+            # [복구] 가중치를 다시 높임 (10.0 -> 25.0)
+            # 일단 폭락을 잡는게 우선임
+            scale_pos_weight=25.0,    
             
-            # [밸런스 핵심 2] 규제 완화
-            # 1.0(너무 빡빡함) -> 0.2 (유연하게)
-            gamma=0.2,               
-            min_child_weight=3,      
+            # [복구] 규제 제거 (자유롭게 학습하도록)
+            gamma=0,               
+            min_child_weight=1,      
             
             subsample=0.8,
-            colsample_bytree=0.6,    # 피처를 다양하게 써서 일반화 유도
+            colsample_bytree=0.8,
             
             random_state=42,
-            eval_metric='auc',
-            n_jobs=-1
+            n_jobs=-1,
+            eval_metric='auc'
         )
         
         self.model.fit(
@@ -979,81 +974,65 @@ class StructuralRiskDetector2026:
             verbose=False
         )
         
-        # 예측 확률
+        # 확률 예측
         y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
-        # [SMOOTHING] EMA 20 적용
-        y_pred_proba = pd.Series(y_pred_proba).ewm(span=20).mean().values
-        
-        # [Strategy 3] Constraint-Based Thresholding (전략적 임계값)
-        precisions, recalls, thresholds = precision_recall_curve(y_test, y_pred_proba)
-        
-        # [핵심 알고리즘] "정밀도 35%는 무조건 넘겨라. 그 중에서 리콜 제일 높은 거 가져와."
-        # 목표: Precision >= 0.35를 만족하는 구간 찾기
-        target_precision = 0.35
-        
-        # thresholds length is N, precision/recall is N+1. Use logic carefully.
-        # precisions[:-1] matches thresholds length
-        valid_indices = np.where(precisions[:-1] >= target_precision)[0]
-        
-        if len(valid_indices) > 0:
-            # 조건 만족하는 것 중 Recall이 가장 높은 지점 선택
-            best_valid_idx = valid_indices[np.argmax(recalls[valid_indices])]
-            optimal_threshold = thresholds[best_valid_idx]
-            
-            # For logging
-            est_precision = precisions[best_valid_idx]
-            est_recall = recalls[best_valid_idx]
-            est_f1 = 2*(est_precision*est_recall)/(est_precision+est_recall+1e-9)
+        # [핵심 로직] Dual Thresholding (Regime-Based)
+        # X_test에서 'volatility' 컬럼을 가져옴
+        if 'volatility' in X_test.columns:
+            vol_values = X_test['volatility'].values
         else:
-            # 조건 만족하는 게 없으면 그냥 F1 최대 지점 선택 (차선책)
-            f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-9)
-            best_idx = np.argmax(f1_scores)
-            if best_idx < len(thresholds):
-                optimal_threshold = thresholds[best_idx]
-                est_precision = precisions[best_idx]
-                est_recall = recalls[best_idx]
-                est_f1 = f1_scores[best_idx]
-            else:
-                optimal_threshold = 0.5
-                est_precision = 0.0
-                est_recall = 0.0
-                est_f1 = 0.0
+            vol_values = np.zeros(len(X_test))
             
-        print(f"\n🎯 [황금비 튜닝 결과]")
-        print(f"   전략: Precision {target_precision*100:.0f}% 이상 유지하며 Recall 극대화")
-        print(f"   최적 임계값: {optimal_threshold:.4f}")
-        # AUC calc
-        current_auc = roc_auc_score(y_test, y_pred_proba)
-        print(f"   예상 AUC: {current_auc:.4f} (목표: 0.7+)")
-        print(f"   예상 Precision: {est_precision:.4f} (목표: 0.4+)")
-        print(f"   예상 Recall: {est_recall:.4f} (목표: 0.5+)")
-        print(f"   예상 F1 Score: {est_f1:.4f}")
+        final_preds = []
         
-        self.threshold = optimal_threshold
+        for i in range(len(y_pred_proba)):
+            prob = y_pred_proba[i]
+            vol = vol_values[i]
+            
+            # Case A: 시장이 공포에 질려있을 때 (High Volatility Regime)
+            # 이미 시장이 무서워하므로, 휩소 방지를 위해 확실할 때만(0.7) 경고
+            if vol > 0.5: 
+                threshold = 0.70
+                
+            # Case B: 시장이 평온할 때 (Low Volatility Regime)
+            # 갑작스런 충격을 잡아야 하므로, 기준을 낮춰서(0.3) 예민하게 반응
+            else:
+                threshold = 0.30
+                
+            final_preds.append(1 if prob >= threshold else 0)
         
-        # 최종 예측 (Smart Threshold 적용)
-        y_pred = (y_pred_proba >= optimal_threshold).astype(int)
+        final_preds = np.array(final_preds)
         
-        # 평가
+        # 평가 지표 계산
         auc = roc_auc_score(y_test, y_pred_proba)
+        rec = recall_score(y_test, final_preds)
+        prec = precision_score(y_test, final_preds, zero_division=0)
+        f1 = f1_score(y_test, final_preds, zero_division=0)
+        
+        print(f"\n🎯 [Regime-Based 복구 결과]")
+        print(f"   AUC: {auc:.4f}")
+        print(f"   Recall: {rec:.1%} (목표: 50%+)")
+        print(f"   Precision: {prec:.1%} (목표: 40%+)")
+        print(f"   F1 Score: {f1:.3f}")
+        
+        self.threshold = 0.30 # Base threshold for reference
         
         # Confusion Matrix
-        cm = confusion_matrix(y_test, y_pred)
+        cm = confusion_matrix(y_test, final_preds)
         
         # [OK] 백테스트 결과 저장
-        from sklearn.metrics import accuracy_score, f1_score
         self.backtest_results = {
             'auc': auc,
-            'recall': recall_score(y_test, y_pred),
-            'precision': precision_score(y_test, y_pred, zero_division=0),
-            'f1': f1_score(y_test, y_pred, zero_division=0),
-            'accuracy': accuracy_score(y_test, y_pred),
+            'recall': rec,
+            'precision': prec,
+            'f1': f1,
+            'accuracy': accuracy_score(y_test, final_preds),
             'confusion_matrix': cm,
-            'threshold': float(optimal_threshold), # Ensure float
-            'threshold_desc': f"Recall Max (P>{target_precision})",
+            'threshold': 0.30, # Dynamic
+            'threshold_desc': "Dual Regime (0.3/0.7)",
             'y_test': y_test,
-            'y_pred': y_pred,
+            'y_pred': final_preds,
             'y_pred_proba': y_pred_proba,
             'X_test': X_test,
             'split_date': split_date,
@@ -1061,8 +1040,7 @@ class StructuralRiskDetector2026:
             # Full History
             'X_full': X,
             'y_full': y,
-            'y_pred_proba_full': self.model.predict_proba(X)[:, 1], # Raw probs for full
-            # Note: Regime Filter Removed as per request due to confusion
+            'y_pred_proba_full': self.model.predict_proba(X)[:, 1],
             'test_start_date': X_test.index[0],
             'importances': pd.DataFrame({
                 'feature': X.columns,
@@ -1070,10 +1048,21 @@ class StructuralRiskDetector2026:
             }).sort_values('importance', ascending=False)
         }
         
-        # Smoothed Full Probs
-        self.backtest_results['y_pred_proba_full'] = pd.Series(self.backtest_results['y_pred_proba_full']).ewm(span=20).mean().values
-        # Full predictions based on optimal threshold
-        self.backtest_results['y_pred_full_refined'] = (self.backtest_results['y_pred_proba_full'] >= optimal_threshold).astype(int)
+        # Use Dual Threshold logic for Full History predictions as well
+        y_pred_proba_full = self.backtest_results['y_pred_proba_full']
+        if 'volatility' in X.columns:
+            vol_full = X['volatility'].values
+        else:
+            vol_full = np.zeros(len(X))
+            
+        final_preds_full = []
+        for i in range(len(y_pred_proba_full)):
+            prob = y_pred_proba_full[i]
+            vol = vol_full[i]
+            thresh = 0.70 if vol > 0.5 else 0.30
+            final_preds_full.append(1 if prob >= thresh else 0)
+            
+        self.backtest_results['y_pred_full_refined'] = np.array(final_preds_full)
         
         return self.model
     
