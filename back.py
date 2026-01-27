@@ -724,8 +724,31 @@ class StructuralRiskDetector2026:
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
         
-        # [USER REQUEST] Eco Surprise 영향력 축소 (De-powering)
+        # [OK] NEW: Cheat Code 1 & 3 (Feature Interaction & Regime Awareness)
+        # 1. Regime Features (추세 반영)
+        ma200 = spy_close.rolling(200).mean()
+        dist_ma200 = (spy_close - ma200) / ma200
         
+        # Reindex to features index
+        features['dist_ma200'] = dist_ma200.reindex(features.index).ffill()
+        
+        # Volatility Regime (Relative Vol)
+        if 'volatility' in features.columns:
+            vol_ma60 = features['volatility'].rolling(60).mean()
+            features['vol_regime'] = features['volatility'] - vol_ma60
+
+        # 2. Synergy Features (Interaction) -> "겹악재"
+        if 'volatility' in features.columns and 'bond_stress' in features.columns:
+            features['vol_bond_interact'] = features['volatility'] * features['bond_stress']
+            
+        if 'volatility' in features.columns and 'net_liquidity' in features.columns:
+             # Liquidity (-) when bad, so * -1 to make positive risk
+             features['vol_liq_interact'] = features['volatility'] * (features['net_liquidity'] * -1)
+             
+        if 'volatility_accel' in features.columns and 'bond_stress_accel' in features.columns:
+             features['accel_combo'] = features['volatility_accel'] * features['bond_stress_accel']
+        
+        # [USER REQUEST] Eco Surprise 영향력 축소 (De-powering)
         # 1. 신호 강도(Magnitude) 50% 축소
         if 'eco_surprise' in features.columns:
              features['eco_surprise'] = features['eco_surprise'] * 0.5
@@ -930,14 +953,17 @@ class StructuralRiskDetector2026:
         
         # XGBoost 학습
         self.model = XGBClassifier(
-            n_estimators=300,        
-            max_depth=4,             
-            learning_rate=0.05,      
-            subsample=0.8,
-            colsample_bytree=0.8,
-            scale_pos_weight=pos_weight,  # [Strategy 1] 8.0
+            n_estimators=500,        # [Cheat Code 2] 300 -> 500
+            max_depth=5,             # [Cheat Code 2] 4 -> 5
+            learning_rate=0.03,      # [Cheat Code 2] 0.05 -> 0.03 (Slower)
+            subsample=0.7,           # [Cheat Code 2] 0.8 -> 0.7
+            colsample_bytree=0.7,    # [Cheat Code 2] 0.8 -> 0.7
+            gamma=0.2,               # [Cheat Code 2] Noise Cut
+            min_child_weight=3,      # [Cheat Code 2] Outlier Ignore
+            scale_pos_weight=pos_weight,  
             random_state=42,
-            eval_metric='logloss'
+            eval_metric='auc',       # [Cheat Code 2] Explicit AUC
+            n_jobs=-1
         )
         
         self.model.fit(
