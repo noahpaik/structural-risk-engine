@@ -844,8 +844,8 @@ class StructuralRiskDetector2026:
             print("[WARN] 학습 데이터에 Crash 없음. Dummy Model 사용.")
             pos_weight = 1.0
         else:
-            # [SENSITIVITY BOOST] 가중치 2 배 적용
-            pos_weight = (len(y_train[y_train==0]) / len(y_train[y_train==1])) * 2.0
+            # [SENSITIVITY BOOST] 가중치 5 배 적용 (Aggressive Tuning)
+            pos_weight = (len(y_train[y_train==0]) / len(y_train[y_train==1])) * 5.0
             print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
         # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
@@ -897,9 +897,9 @@ class StructuralRiskDetector2026:
         print(f"[TARGET] Dynamic Threshold (Max F2={best_f2:.3f}): {optimal_threshold:.3f}")
         
         # [OK] 안전 장치: 너무 낮은 Threshold 방지 (최소 0.10은 유지)
-        if optimal_threshold < 0.10:
-             # print(f"[WARN] Calculated threshold {optimal_threshold:.3f} is too low. Enforcing floor 0.10") # OSError workaround
-             optimal_threshold = 0.10
+        if optimal_threshold < 0.05:
+             # print(f"[WARN] Calculated threshold {optimal_threshold:.3f} is too low. Enforcing floor 0.05") # OSError workaround
+             optimal_threshold = 0.05
         
         self.threshold = optimal_threshold
         
