@@ -1,0 +1,474 @@
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime
+from datetime import datetime
+import yfinance as yf
+import numpy as np
+from plotly.subplots import make_subplots
+import back
+import importlib
+try:
+    importlib.reload(back)
+except:
+    pass
+from back import StructuralRiskDetector2026
+
+# 페이지 설정
+st.set_page_config(
+    page_title="Structural Risk Monitor",
+    page_icon="📊",
+    layout="wide"
+)
+
+# 사이드바
+st.sidebar.title("⚙️ 설정")
+st.sidebar.markdown("---")
+
+# 모델 초기화 (캐시)
+# 모델 초기화 (캐시)
+# 모델 초기화 (캐시)
+@st.cache_resource
+def load_detector_v9():
+    """모델 로드"""
+    with open('api.txt', 'r') as f:
+        api_key = f.read().strip()
+    return StructuralRiskDetector2026(fred_api_key=api_key)
+
+@st.cache_data(ttl=3600)
+def load_data_v9(_detector):
+    """데이터 로드 (모델 학습 제외)"""
+    with st.spinner('데이터 로딩 중...'):
+        df = _detector.prepare_training_data(start_date='2018-01-01', end_date='2026-01-27')
+    return df
+
+@st.cache_resource
+def run_training_v9(_detector, df):
+    """모델 학습 (별도 캐시)"""
+    with st.spinner('모델 학습 및 백테스트 중...'):
+        _detector.train_model(df, split_date='2023-01-01')
+    return _detector
+
+# 모델 및 데이터 로드
+detector = load_detector_v9()
+df = load_data_v9(detector)
+detector = run_training_v9(detector, df)
+
+# [DEBUG] 데이터 로드 확인
+# st.success(f"데이터 로드 완료 (Shape: {df.shape})")
+# st.write("컬럼 목록:", df.columns.tolist())
+
+# 사이드바 정보
+st.sidebar.info(f"""
+**모델 정보**
+- 레이어: 7개
+- 피처: 22개
+- 학습 기간: 2018-2022
+- 검증 기간: 2023-2026
+""")
+
+if st.sidebar.button("🔄 데이터 갱신"):
+    st.cache_data.clear()
+    st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("© 2026 Structural Risk Monitor")
+
+# 페이지 네비게이션
+page = st.sidebar.radio(
+    "페이지 선택",
+    ["🏠 Home - 현재 위험", "📈 Backtest 결과", "🎯 피처 신호", "🔬 모델 진단", "ℹ️ About"]
+)
+
+# ==========================================
+# Page 1: Home - 현재 위험 평가
+# ==========================================
+if page == "🏠 Home - 현재 위험":
+    st.title("📊 실시간 위험 평가")
+    st.markdown("---")
+    
+    # 현재 평가
+    current = detector.get_current_assessment(df)
+    
+    # 상단 메트릭
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        risk_emoji = {"Normal": "🟢", "Elevated": "🟡", "High": "🔴"}
+        st.metric(
+            "위험 등급",
+            current['risk_level'],
+            delta=None,
+            delta_color="inverse"
+        )
+        st.markdown(f"### {risk_emoji.get(current['risk_level'], '⚪')}")
+    
+    with col2:
+        st.metric(
+            "폭락 확률 (20일)",
+            f"{current['probability']:.1%}"
+        )
+        # 게이지 차트
+        fig_gauge = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=current['probability'] * 100,
+            domain={'x': [0, 1], 'y': [0, 1]},
+            gauge={
+                'axis': {'range': [0, 100]},
+                'bar': {'color': "darkred" if current['probability'] > 20 else "orange" if current['probability'] > 10 else "green"},
+                'steps': [
+                    {'range': [0, 10], 'color': "lightgreen"},
+                    {'range': [10, 20], 'color': "yellow"},
+                    {'range': [20, 100], 'color': "lightcoral"}
+                ],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 20
+                }
+            }
+        ))
+        fig_gauge.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20))
+        st.plotly_chart(fig_gauge, use_container_width=True)
+    
+    with col3:
+        st.metric(
+            "권장 주식 비중",
+            f"{current['equity_weight']:.0%}"
+        )
+        # 파이 차트
+        fig_pie = go.Figure(data=[go.Pie(
+            labels=['주식', '현금/채권'],
+            values=[current['equity_weight'], 1 - current['equity_weight']],
+            marker_colors=['steelblue', 'lightgray']
+        )])
+        fig_pie.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20), showlegend=False)
+        st.plotly_chart(fig_pie, use_container_width=True)
+    
+    st.markdown("---")
+    
+    # 주요 신호 강도
+    st.subheader("📡 현재 신호 강도")
+    current_features = df.drop('crash', axis=1).iloc[-1]
+    base_features = ['volatility', 'bond_stress', 'eco_surprise', 'momentum', 'liquidity', 'fx_carry', 'net_liquidity']
+    
+    feature_values = {feat: current_features[feat] for feat in base_features if feat in current_features}
+    
+    fig_bar = go.Figure([go.Bar(
+        x=list(feature_values.keys()),
+        y=list(feature_values.values()),
+        marker_color=['red' if v > 1 else 'orange' if v > 0.5 else 'green' for v in feature_values.values()],
+        text=[f"{v:.2f}" for v in feature_values.values()],
+        textposition='auto'
+    )])
+    fig_bar.update_layout(
+        title="신호 강도 (Z-score)",
+        xaxis_title="Feature",
+        yaxis_title="값",
+        height=400
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+# ==========================================
+# Page 2: Backtest 결과
+# ==========================================
+elif page == "📈 Backtest 결과":
+    st.title("📈 백테스트 성능 분석")
+    st.markdown("---")
+    
+    # 성능 메트릭 (상단)
+    if hasattr(detector, 'backtest_results'):
+        results = detector.backtest_results
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("AUC", f"{results.get('auc', 0):.3f}")
+        col2.metric("Recall", f"{results.get('recall', 0)*100:.1f}%")
+        col3.metric("Precision", f"{results.get('precision', 0)*100:.1f}%")
+        col4.metric("F1 Score", f"{results.get('f1', 0):.3f}")
+    else:
+        st.warning("백테스트 결과가 없습니다. 모델을 먼저 학습하세요.")
+    
+    st.markdown("---")
+
+    # [NEW] 종합 분석 차트 (Full History)
+    st.subheader("🔍 종합 분석 (Full History)")
+    
+    if hasattr(detector, 'backtest_results') and 'X_full' in results:
+        X_full = results['X_full']
+        y_full = results['y_full']
+        y_pred_proba_full = results['y_pred_proba_full']
+        test_start_date = results.get('test_start_date')
+        
+        # SPY 데이터 로드
+        with st.spinner("차트 데이터 준비 중..."):
+            try:
+                spy_data = yf.download('SPY', start=X_full.index[0], progress=False)
+                if isinstance(spy_data.columns, pd.MultiIndex):
+                    spy_data.columns = spy_data.columns.get_level_values(0)
+                if spy_data.index.tz is not None:
+                    spy_data.index = spy_data.index.tz_localize(None)
+                spy_close = spy_data['Close'] if 'Close' in spy_data.columns else spy_data.iloc[:, 0]
+                spy_close = spy_close.reindex(X_full.index, method='ffill') # Align dates
+            except:
+                spy_close = pd.Series(np.nan, index=X_full.index)
+
+        # Plot 생성
+        fig_full = make_subplots(
+            rows=4, cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.04,
+            subplot_titles=("SPY Price + Crash Zones", "Crash Probability", "Layer Signals (Z-scores)", "Synchronized Stress Duration"),
+            row_heights=[0.3, 0.2, 0.25, 0.25]
+        )
+        
+        # 1. SPY Price
+        fig_full.add_trace(go.Scatter(x=spy_close.index, y=spy_close, mode='lines', name='SPY', line=dict(color='black')), row=1, col=1)
+        
+        # Crash Zones (Red Background)
+        y_series = pd.Series(y_full, index=X_full.index)
+        crash_starts = y_series[(y_series == 1) & (y_series.shift(1) != 1)].index
+        crash_ends = y_series[(y_series == 1) & (y_series.shift(-1) != 1)].index
+        
+        if len(crash_starts) > 0 and len(crash_ends) > 0:
+             if len(crash_ends) > 0 and len(crash_starts) > 0 and crash_ends[0] < crash_starts[0]: 
+                 crash_ends = crash_ends[1:]
+             if len(crash_starts) > len(crash_ends): 
+                 crash_ends = crash_ends.append(pd.Index([X_full.index[-1]]))
+             
+             for start, end in zip(crash_starts, crash_ends):
+                 fig_full.add_vrect(
+                     x0=start, x1=end, 
+                     fillcolor="red", opacity=0.3, layer="below", line_width=0, 
+                     row=1, col=1
+                 )
+
+        # 2. Probability
+        fig_full.add_trace(go.Scatter(x=X_full.index, y=y_pred_proba_full, mode='lines', name='Prob', line=dict(color='darkred', width=1)), row=2, col=1)
+        fig_full.add_hline(y=0.5, line_dash="dash", line_color="red", row=2, col=1, annotation_text="Threshold 0.5")
+        
+        # 3. Signals
+        for col, color in zip(['volatility', 'bond_stress', 'eco_surprise'], ['#1f77b4', '#ff7f0e', '#2ca02c']):
+            if col in X_full.columns:
+                fig_full.add_trace(go.Scatter(x=X_full.index, y=X_full[col], mode='lines', name=col, line=dict(width=1, color=color)), row=3, col=1)
+        fig_full.add_hline(y=0, line_dash="dash", line_color="gray", row=3, col=1)
+
+        # 4. Stress Duration
+        if 'sync_stress_duration' in X_full.columns:
+            fig_full.add_trace(go.Scatter(
+                x=X_full.index, y=X_full['sync_stress_duration'], 
+                mode='lines', name='Duration', 
+                fill='tozeroy', line=dict(color='#ffbb78', width=1)
+            ), row=4, col=1)
+
+        # Test Start Line
+        if test_start_date:
+            for i in range(1, 5):
+                fig_full.add_vline(x=test_start_date, line_dash="dash", line_color="blue", row=i, col=1)
+
+        fig_full.update_layout(height=1000, title_text="Structural Risk Analysis (Full History)", showlegend=True)
+        st.plotly_chart(fig_full, use_container_width=True)
+    
+    st.markdown("---")
+    
+    # Confusion Matrix
+    if 'confusion_matrix' in results:
+        cm = results['confusion_matrix']
+        # Heatmap
+        fig_cm = go.Figure(data=go.Heatmap(
+            z=[[cm[1,1], cm[0,1]], [cm[1,0], cm[0,0]]], # TP, FP / FN, TN 순서? 보통은 TN FP / FN TP
+            x=['Crash (Pred)', 'Normal (Pred)'],
+            y=['Crash (Actual)', 'Normal (Actual)'],
+            colorscale='Blues',
+            text=[[f"TP: {cm[1,1]}", f"FP: {cm[0,1]}"], [f"FN: {cm[1,0]}", f"TN: {cm[0,0]}"]],
+            texttemplate="%{text}",
+            textfont={"size": 14}
+        ))
+        # Note: scikit-learn cm is [[TN, FP], [FN, TP]]
+        # Let's visualize normally: x=Predicted, y=Actual
+        # x=0(Normal), 1(Crash)
+        
+        fig_cm = go.Figure(data=go.Heatmap(
+            z=cm, 
+            x=['Predicted Normal', 'Predicted Crash'],
+            y=['Actual Normal', 'Actual Crash'],
+            colorscale='Blues',
+            text=cm,
+            texttemplate="%{text}", 
+            textfont={"size": 16},
+            showscale=False
+        ))
+        
+        fig_cm.update_layout(
+            title="Confusion Matrix",
+            yaxis=dict(autorange="reversed") # To match standard matrix layout
+        )
+        st.plotly_chart(fig_cm, use_container_width=True)
+
+    # 신호 발생 통계
+    st.subheader("📅 연도별 신호 통계")
+    if 'X_test' in results and 'y_test' in results and 'y_pred' in results:
+        try:
+            X_idx = results['X_test'].index
+            y_test = results['y_test']
+            y_pred = results['y_pred']
+            
+            # 데이터프레임 생성
+            stats_df = pd.DataFrame({'Actual': y_test, 'Pred': y_pred}, index=X_idx)
+            stats_df['Year'] = stats_df.index.year
+            
+            # 집계
+            years = sorted(stats_df['Year'].unique())
+            tp_list = []
+            fp_list = []
+            fn_list = []
+            
+            for y in years:
+                sub = stats_df[stats_df['Year'] == y]
+                tp_list.append(len(sub[(sub['Actual']==1) & (sub['Pred']==1)]))
+                fp_list.append(len(sub[(sub['Actual']==0) & (sub['Pred']==1)]))
+                fn_list.append(len(sub[(sub['Actual']==1) & (sub['Pred']==0)]))
+            
+            # 차트
+            fig_stats = go.Figure()
+            fig_stats.add_trace(go.Bar(name='TP (정확)', x=years, y=tp_list, marker_color='green'))
+            fig_stats.add_trace(go.Bar(name='FP (과민)', x=years, y=fp_list, marker_color='orange'))
+            fig_stats.add_trace(go.Bar(name='FN (놓침)', x=years, y=fn_list, marker_color='red'))
+            
+            fig_stats.update_layout(barmode='stack', title="연도별 예측 상세", xaxis_title="연도", yaxis_title="건수")
+            st.plotly_chart(fig_stats, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"통계 차트 생성 오류: {e}")
+
+# ==========================================
+# Page 3: 피처 신호
+# ==========================================
+elif page == "🎯 피처 신호":
+    st.title("🎯 피처 신호 분석")
+    st.markdown("---")
+    
+    # 피처 선택
+    available_features = ['volatility', 'bond_stress', 'eco_surprise', 'momentum', 'liquidity', 'fx_carry', 'net_liquidity']
+    selected_features = st.multiselect(
+        "분석할 피처 선택",
+        available_features,
+        default=['momentum', 'net_liquidity', 'fx_carry']
+    )
+    
+    if selected_features:
+        for feat in selected_features:
+            st.subheader(f"📈 {feat}")
+            
+            # 시계열 차트
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df.index,
+                y=df[feat],
+                mode='lines',
+                name=feat,
+                line=dict(color='steelblue', width=2)
+            ))
+            
+            # Crash 라벨 표시
+            crash_dates = df[df['crash'] == 1].index
+            for crash_date in crash_dates:
+                fig.add_vline(x=crash_date, line_width=1, line_dash="dash", line_color="red", opacity=0.3)
+            
+            fig.update_layout(
+                title=f"{feat} Signal Over Time",
+                xaxis_title="Date",
+                yaxis_title="값 (Z-score)",
+                height=300,
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("피처를 선택하세요")
+
+# ==========================================
+# Page 4: 모델 진단
+# ==========================================
+elif page == "🔬 모델 진단":
+    st.title("🔬 모델 진단")
+    st.markdown("---")
+    
+    # Feature Importance
+    st.subheader("🎯 Feature Importance (Top 15)")
+    
+    if hasattr(detector, 'model') and detector.model is not None:
+        X = df.drop('crash', axis=1)
+        importances = pd.DataFrame({
+            'feature': X.columns,
+            'importance': detector.model.feature_importances_
+        }).sort_values('importance', ascending=False).head(15)
+        
+        fig_imp = go.Figure([go.Bar(
+            x=importances['importance'],
+            y=importances['feature'],
+            orientation='h',
+            marker_color='steelblue'
+        )])
+        fig_imp.update_layout(
+            title="Feature Importance",
+            xaxis_title="Importance",
+            yaxis_title="Feature",
+            height=500
+        )
+        st.plotly_chart(fig_imp, use_container_width=True)
+        
+        # 테이블
+        st.dataframe(importances, use_container_width=True)
+    else:
+        st.warning("모델이 학습되지 않았습니다.")
+
+# ==========================================
+# Page 5: About
+# ==========================================
+elif page == "ℹ️ About":
+    st.title("ℹ️ Structural Risk Monitor")
+    st.markdown("---")
+    
+    st.markdown("""
+    ## 📌 모델 개요
+    
+    Structural Risk Detector 2026은 **7개 레이어**로 구성된 다차원 시장 위험 탐지 시스템입니다.
+    
+    ### 🧩 7개 Feature Layers
+    
+    1. **Volatility Structure** (VIX 구조)
+       - VIX 수준 및 변화율
+       - 역사적 분위수 대비 현재 위치
+    
+    2. **Bond Stress Divergence** (채권 스트레스)
+       - 10년물-2년물 스프레드
+       - 국채 vs SOFR 스프레드
+    
+    3. **Economic Surprise** (경제 서프라이즈)
+       - Unemployment rate vs recession threshold
+    
+    4. **Momentum Indicators** (모멘텀)
+       - RSI, MACD, Price vs MA200
+    
+    5. **Liquidity Microstructure** (미세구조 유동성)
+       - Amihud Illiquidity
+       - Corwin-Schultz Spread
+       - VVIX Divergence
+    
+    6. **FX Carry Risk** (환율 캐리 위험)
+       - USD/JPY 변동성
+       - 엔화-주가 상관관계
+    
+    7. **Net Liquidity** (순유동성)
+       - Fed Balance Sheet - TGA - RRP
+       - 일일 유동성 변화율
+    
+    ### 📊 성능 (2023-2026 검증)
+    - **AUC**: 0.403
+    - **Recall**: 6% (1/18 crashes detected)
+    - **조기경보 성공**: SVB (2023), Black Monday (2024), 3월 폭락 (2025)
+    
+    ### 🔗 데이터 소스
+    - Yahoo Finance (SPY, VIX, VVIX, JPY=X)
+    - FRED API (TGA, RRP, Fed BS, Economic data)
+    """)

@@ -1,0 +1,15 @@
+# Secrets
+api.txt
+secrets.toml
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Streamlit
+.streamlit/
+
+# IntejliJ / VSCode
+.idea/
+.vscode/
