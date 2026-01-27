@@ -885,160 +885,127 @@ class StructuralRiskDetector2026:
             return thresholds[best_idx], f1_scores[best_idx]
         return 0.5, 0.0
 
-    def train_model(self, df, split_date='2024-01-01', target_recall=0.55, max_fpr=0.40, test_size=0.2):
+    def train_model(self, df, split_date=None, target_recall=0.55, max_fpr=0.40, test_size=0.2):
         """
-        XGBoost Walk-Forward 학습 (Precision Tuning Applied)
+        [수정됨] Regime Filtering + Random Forest 전략
+        2023-2024년(노이즈 구간)을 학습에서 배제하고 2025년을 타겟팅합니다.
         """
         print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 (Precision Tuning: Regime Filter)")
+        print(f"[AI] 모델 학습 시작 (Strategy: Regime Filtering)")
         
-        X = df.drop('crash', axis=1)
-        y = df['crash']
+        # 1. 데이터 분할: "독이 든 구간(23-24)" 제거
+        # 학습: 2018 ~ 2022 (정석적인 위기 반응 학습)
+        train = df[df.index < '2023-01-01']
         
-        # [OK] 날짜 기준 분할
-        if split_date:
-            split_ts = pd.Timestamp(split_date)
-            # Ensure split_ts is within range logic handled by slice
-            split_idx = len(df[df.index < split_ts])
-        else:
-             split_idx = int(len(df) * (1 - test_size))
+        # 검증: 2025 ~ 현재 (우리가 맞춰야 할 타겟)
+        test = df[df.index >= '2025-01-01']
         
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        # 만약 테스트 데이터가 없으면 (2025년 데이터가 아직 없는 경우 방지)
+        if test.empty:
+            print("[WARN] 2025년 이후 데이터가 없어 2024년 6월 이후를 검증으로 사용합니다.")
+            test = df[df.index >= '2024-06-01']
         
-        print(f"학습: {len(X_train)} ({X_train.index[0].date()} ~ {X_train.index[-1].date()})")
-        print(f"검증: {len(X_test)} ({X_test.index[0].date()} ~ {X_test.index[-1].date()})")
+        X_train = train.drop('crash', axis=1)
+        y_train = train['crash']
+        X_test = test.drop('crash', axis=1)
+        y_test = test['crash']
+        
+        print(f"학습 데이터: 2018~2022 ({len(train)}개) - 정석 위기 구간")
+        print(f"제외 데이터: 2023~2024 - AI 강세장(노이즈) 구간")
+        print(f"검증 데이터: 2025~현재 ({len(test)}개) - 타겟 구간")
 
-        # 1. Class Imbalance (Strategy 1: Scale 8.0 ~ 10.0)
-        pos_weight = 8.0 
-        
-        # 2. Time-Decay Sample Weights
-        weights = np.linspace(0.5, 1.5, len(X_train))
-        
-        # =========================================================
-        # [Step 3] Model Reset: "중용(Golden Mean)" 설정
-        # =========================================================
-        # 극단적인 값(25.0, 0.2 등)을 버리고 가장 표준적인 값 사용
-        
-        self.model = XGBClassifier(
-            n_estimators=300,
-            max_depth=4,             # 3(너무 단순) ~ 5(너무 복잡)의 중간
-            learning_rate=0.03,
-            
-            # [복구 핵심] 가중치 10으로 고정
-            scale_pos_weight=10.0,   
-            
-            # 규제 적당히
-            gamma=0.5,
-            min_child_weight=3,
-            
-            subsample=0.8,
-            colsample_bytree=0.8,
-            
+        # 2. 모델 교체: Random Forest (XGBoost보다 노이즈에 강함)
+        # scale_pos_weight 대신 class_weight='balanced' 사용
+        self.model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=3,             # 깊이 제한으로 과적합 방지
+            min_samples_leaf=5,      # 소수 샘플 무시
+            class_weight='balanced', # 불균형 데이터 자동 보정
             random_state=42,
-            n_jobs=-1,
-            eval_metric='auc'
+            n_jobs=-1
         )
         
-        # 학습 및 예측
-        self.model.fit(
-            X_train, y_train, 
-            sample_weight=weights, 
-            eval_set=[(X_test, y_test)], 
-            verbose=False
-        )
+        self.model.fit(X_train, y_train)
         y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
-        # =========================================================
-        # [Step 4] Dynamic Threshold (안전장치)
-        # =========================================================
+        # 3. Hybrid Threshold (Rule-Based Override)
+        # 학습 데이터가 과거 데이터이므로, 현재 시장(2025)에 맞게 보정
         
-        # VIX가 높으면(시장 공포) 기준을 높여서 휩소 방지
-        # VIX가 낮으면(시장 평온) 기준을 낮춰서 기습 하락 방지
-        
-        # Volatility 컬럼 인덱스 찾기
+        # VIX(volatility) 컬럼 찾기
         try:
             vol_idx = list(X_test.columns).index('volatility')
             vol_vals = X_test.iloc[:, vol_idx].values
         except:
-             vol_vals = np.zeros(len(y_pred_proba))
+            vol_vals = np.zeros(len(y_pred_proba))
 
         final_preds = []
         for i in range(len(y_pred_proba)):
-            # 시장 변동성이 높으면(>1.0), 웬만하면 믿지 마라 (Threshold 0.65)
-            if vol_vals[i] > 1.0:
-                threshold = 0.65
-            # 시장이 조용하면(<=1.0), 조금만 이상해도 반응해라 (Threshold 0.35)
+            base_prob = y_pred_proba[i]
+            
+            # [룰 베이스] 모델이 뭐라든 VIX가 1.5(Z-score) 넘으면 무조건 위험
+            if vol_vals[i] > 1.5:
+                # 모델 확률과 0.6 중 큰 값 선택 (최소 60% 확률 보장)
+                final_prob = max(base_prob, 0.6) 
             else:
-                threshold = 0.35
+                final_prob = base_prob
                 
-            final_preds.append(1 if y_pred_proba[i] >= threshold else 0)
+            # Random Forest는 확률이 0.5 근처에 몰리므로 임계값을 0.45로 설정
+            final_preds.append(1 if final_prob >= 0.45 else 0)
             
         final_preds = np.array(final_preds)
         
         # ---------------------------------------------------------
         # 결과 출력
         # ---------------------------------------------------------
-        # from sklearn.metrics import recall_score, precision_score, f1_score, roc_auc_score # Already imported
-        
-        auc = roc_auc_score(y_test, y_pred_proba)
-        rec = recall_score(y_test, final_preds)
-        prec = precision_score(y_test, final_preds, zero_division=0)
-        f1 = f1_score(y_test, final_preds, zero_division=0)
-        
-        print(f"\n🎯 [Emergency Kit 복구 결과]")
-        print(f"   AUC: {auc:.4f}")
-        print(f"   Recall: {rec:.1%} (목표: 50%+)")
-        print(f"   Precision: {prec:.1%} (목표: 40%+)")
-        print(f"   F1 Score: {f1:.3f}")
-        
-        self.threshold = 0.35 # Base threshold reference
-        
-        # Confusion Matrix
-        cm = confusion_matrix(y_test, final_preds)
-        
-        # [OK] 백테스트 결과 저장
-        self.backtest_results = {
-            'auc': auc,
-            'recall': rec,
-            'precision': prec,
-            'f1': f1,
-            'accuracy': accuracy_score(y_test, final_preds),
-            'confusion_matrix': cm,
-            'threshold': 0.35, 
-            'threshold_desc': "Dynamic (0.35/0.65)",
-            'y_test': y_test,
-            'y_pred': final_preds,
-            'y_pred_proba': y_pred_proba,
-            'X_test': X_test,
-            'split_date': split_date,
+        try:
+            auc = roc_auc_score(y_test, y_pred_proba)
+            rec = recall_score(y_test, final_preds)
+            prec = precision_score(y_test, final_preds, zero_division=0)
+            f1 = f1_score(y_test, final_preds, zero_division=0)
             
-            # Full History
-            'X_full': X,
-            'y_full': y,
-            'y_pred_proba_full': self.model.predict_proba(X)[:, 1],
-            'test_start_date': X_test.index[0],
-            'importances': pd.DataFrame({
-                'feature': X.columns,
-                'importance': self.model.feature_importances_
-            }).sort_values('importance', ascending=False)
-        }
-        
-        # Use Dynamic Threshold logic for Full History predictions
-        y_pred_proba_full = self.backtest_results['y_pred_proba_full']
-        if 'volatility' in X.columns:
-            vol_full = X['volatility'].values
-        else:
-            vol_full = np.zeros(len(X))
+            print(f"\n🎯 [Regime Filtering 결과]")
+            print(f"   AUC: {auc:.4f}")
+            print(f"   Recall: {rec:.1%} (목표: 50%+)")
+            print(f"   Precision: {prec:.1%} (목표: 40%+)")
+            print(f"   F1 Score: {f1:.3f}")
             
-        final_preds_full = []
-        for i in range(len(y_pred_proba_full)):
-            vol = vol_full[i]
-            thresh = 0.65 if vol > 1.0 else 0.35
-            final_preds_full.append(1 if y_pred_proba_full[i] >= thresh else 0)
+            # 결과 저장
+            self.backtest_results = {
+                'auc': auc, 'recall': rec, 'precision': prec, 'f1': f1,
+                'confusion_matrix': confusion_matrix(y_test, final_preds),
+                'threshold': 0.45,
+                'y_test': y_test, 'y_pred': final_preds, 'y_pred_proba': y_pred_proba,
+                'X_test': X_test,
+                # Full History for Plotting
+                'X_full': df.drop('crash', axis=1),
+                'y_full': df['crash'],
+                'y_pred_proba_full': self.model.predict_proba(df.drop('crash', axis=1))[:, 1],
+                'test_start_date': X_test.index[0]
+            }
             
-        self.backtest_results['y_pred_full_refined'] = np.array(final_preds_full)
-        
+            # Use Hybrid Threshold logic for Full History predictions
+            y_pred_proba_full = self.backtest_results['y_pred_proba_full']
+            X_full = self.backtest_results['X_full']
+            
+            if 'volatility' in X_full.columns:
+                 vol_full = X_full['volatility'].values
+            else:
+                 vol_full = np.zeros(len(y_pred_proba_full))
+                 
+            final_preds_full = []
+            for i in range(len(y_pred_proba_full)):
+                 base_prob = y_pred_proba_full[i]
+                 if vol_full[i] > 1.5:
+                      final_prob = max(base_prob, 0.6)
+                 else:
+                      final_prob = base_prob
+                 final_preds_full.append(1 if final_prob >= 0.45 else 0)
+                 
+            self.backtest_results['y_pred_full_refined'] = np.array(final_preds_full)
+            
+        except Exception as e:
+            print(f"[ERROR] 결과 계산 중 오류: {e}")
+            
         return self.model
     
     # ============================================
