@@ -720,9 +720,14 @@ class StructuralRiskDetector2026:
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
         
-        # [USER REQUEST] eco_surprise 관련 피처 제거 (Overfitting 방지)
-        drop_cols = ['eco_surprise', 'eco_surprise_duration', 'eco_surprise_accel']
-        features = features.drop(columns=[c for c in drop_cols if c in features.columns], errors='ignore')
+        # [USER REQUEST] Eco Surprise 정밀 튜닝 (살리고 가둔다)
+        if 'eco_surprise_duration' in features.columns:
+             # 1. 30일 -> 10일 상한 제한 (Clip)
+             features['eco_surprise_duration'] = features['eco_surprise_duration'].clip(upper=10)
+             
+        if 'eco_surprise_accel' in features.columns:
+             # 2. 가속도 정보 스무딩 (Noise Reduction)
+             features['eco_surprise_accel'] = features['eco_surprise_accel'].rolling(3).mean().fillna(0)
              
         returns = spy_close.pct_change()
         
@@ -858,12 +863,12 @@ class StructuralRiskDetector2026:
         
         # XGBoost 학습
         self.model = XGBClassifier(
-            n_estimators=300,        # 늘림
-            max_depth=5,             # 깊이 약간 증가
-            learning_rate=0.03,      # 학습률 감소
+            n_estimators=300,        
+            max_depth=4,             # [TUNING] 5->4 과적합 방지
+            learning_rate=0.05,      # [TUNING] 0.03->0.05 (or keep low) - User asked 0.05
             subsample=0.8,
             colsample_bytree=0.8,
-            scale_pos_weight=pos_weight,
+            scale_pos_weight=8.0,    # [TUNING] 10->8 하향 조정
             random_state=42,
             eval_metric='logloss'
         )
@@ -901,8 +906,8 @@ class StructuralRiskDetector2026:
                 best_f2 = f2_scores[best_idx]
                 optimal_threshold = thresholds[best_idx]
         
-        # [USER REQUEST] Threshold 0.40 고정
-        optimal_threshold = 0.40
+        # [USER REQUEST] Threshold 0.25 고정 (황금비)
+        optimal_threshold = 0.25
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
