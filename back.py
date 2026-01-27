@@ -946,7 +946,7 @@ class StructuralRiskDetector2026:
             eval_set=[(X_test, y_test)], 
             verbose=False
         )
-        y_proba = self.model.predict_proba(X_test)[:, 1]
+        y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
         # =========================================================
         # [Step 4] Dynamic Threshold (안전장치)
@@ -960,10 +960,10 @@ class StructuralRiskDetector2026:
             vol_idx = list(X_test.columns).index('volatility')
             vol_vals = X_test.iloc[:, vol_idx].values
         except:
-             vol_vals = np.zeros(len(y_proba))
+             vol_vals = np.zeros(len(y_pred_proba))
 
         final_preds = []
-        for i in range(len(y_proba)):
+        for i in range(len(y_pred_proba)):
             # 시장 변동성이 높으면(>1.0), 웬만하면 믿지 마라 (Threshold 0.65)
             if vol_vals[i] > 1.0:
                 threshold = 0.65
@@ -971,7 +971,7 @@ class StructuralRiskDetector2026:
             else:
                 threshold = 0.35
                 
-            final_preds.append(1 if y_proba[i] >= threshold else 0)
+            final_preds.append(1 if y_pred_proba[i] >= threshold else 0)
             
         final_preds = np.array(final_preds)
         
