@@ -836,7 +836,7 @@ class StructuralRiskDetector2026:
         return df
         
     
-    def train_model(self, df, split_date='2024-01-01', target_recall=None, max_fpr=None, test_size=0.2):
+    def train_model(self, df, split_date='2024-01-01', target_recall=0.55, max_fpr=0.40, test_size=0.2):
         """
         XGBoost Walk-Forward 학습 (Advanced Tuning)
         - Time-Decay Sample Weights
