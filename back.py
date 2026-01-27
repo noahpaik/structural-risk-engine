@@ -724,17 +724,20 @@ class StructuralRiskDetector2026:
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
         
-        # [OK] NEW: Back to Basics (Delta Focus)
-        # 복잡한 Interaction/Regime 제거하고 변화량(Delta)에 집중
+        # [OK] NEW: Velocity Features (변화 속도)
+        # 절대값보다 5일간의 변화량이 위기 감지에 핵심
         
         if 'volatility' in features.columns:
-            features['vol_change_5d'] = features['volatility'].diff(5)
+            features['vol_velocity'] = features['volatility'].diff(5)
             
         if 'bond_stress' in features.columns:
-            features['bond_change_5d'] = features['bond_stress'].diff(5)
+            features['bond_velocity'] = features['bond_stress'].diff(5)
             
         if 'net_liquidity' in features.columns:
-            features['liq_change_5d'] = features['net_liquidity'].diff(5)
+            features['liq_velocity'] = features['net_liquidity'].diff(5)
+        
+        # NaN 제거 (Velocity 계산으로 인한 앞부분 결측 제거)
+        features = features.dropna()
         
         # [USER REQUEST] Eco Surprise 영향력 축소 (De-powering)
         # 1. 신호 강도(Magnitude) 50% 축소
@@ -941,16 +944,23 @@ class StructuralRiskDetector2026:
         # 2. Time-Decay Sample Weights
         weights = np.linspace(0.5, 1.5, len(X_train))
         
-        # XGBoost 학습
+        # XGBoost 학습 (Precision Strike Mode)
         self.model = XGBClassifier(
-            n_estimators=200,        # [Fix] 500 -> 200 (Prevent Overfitting)
-            max_depth=3,             # [Fix] 5 -> 3 (Generalization)
-            learning_rate=0.05,      # [Fix] 0.03 -> 0.05
-            subsample=0.7,
-            colsample_bytree=0.7,
-            gamma=0,                 # [Fix] Remove restrictions
-            min_child_weight=1,      # [Fix] Remove restrictions
-            scale_pos_weight=12.0,   # [Fix] 8.0 -> 12.0 (Boost Recall)
+            n_estimators=200,        # 트리는 적당히
+            max_depth=3,             # 깊이 제한 (일반화)
+            learning_rate=0.04,      # 천천히 꼼꼼하게
+            
+            # [Precision 상승의 열쇠 1] 가중치 대폭 축소
+            # 12.0 -> 4.0 ("확실한 것만 말해라")
+            scale_pos_weight=4.0,    
+            
+            # [Precision 상승의 열쇠 2] 노이즈 제거 규제 강화
+            gamma=1.0,               # 확실한 이득 없으면 가지치기 중단
+            min_child_weight=5,      # 특이 케이스 무시
+            
+            subsample=0.7,           
+            colsample_bytree=0.7,    
+            
             random_state=42,
             eval_metric='auc',
             n_jobs=-1
@@ -969,40 +979,49 @@ class StructuralRiskDetector2026:
         # [SMOOTHING] EMA 20 적용
         y_pred_proba = pd.Series(y_pred_proba).ewm(span=20).mean().values
         
-        # [Strategy 2] Thresh Opt (Reference only, mainly used for analysis)
-        opt_thresh, best_f1 = self.optimize_threshold(y_test, y_pred_proba)
-        print(f"[TARGET] Optimal F1 Threshold: {opt_thresh:.3f} (F1: {best_f1:.3f})")
+        # [Strategy 3] Smart Thresholding (Maximize F1)
+        precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
         
-        # [Strategy 3] Regime Trend Filter (Dynamic Threshold)
-        # Apply filter on Test Set
-        y_pred_refined, bull_market_test = self.apply_trend_filter(X_test, y_pred_proba)
+        # F1 Score 계산
+        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-9)
+        best_idx = np.argmax(f1_scores)
         
-        # Apply filter on Full Set (for visualization)
-        y_pred_proba_full = self.model.predict_proba(X)[:, 1]
-        y_pred_proba_full = pd.Series(y_pred_proba_full).ewm(span=20).mean().values
-        y_pred_full_refined, bull_market_full = self.apply_trend_filter(X, y_pred_proba_full)
+        # thresholds array is shorter by 1
+        if best_idx < len(thresholds):
+            optimal_threshold = thresholds[best_idx]
+            best_f1 = f1_scores[best_idx]
+        else:
+            optimal_threshold = 0.5
+            best_f1 = 0.0
+            
+        print(f"\n🎯 [튜닝 결과]")
+        print(f"   최적 임계값 (Threshold): {optimal_threshold:.4f}")
+        print(f"   예상 F1 Score: {best_f1:.4f}")
         
-        self.threshold = 0.25 # Base threshold logic used inside filter (0.25 or 0.60)
+        self.threshold = optimal_threshold
+        
+        # 최종 예측 (Smart Threshold 적용)
+        y_pred = (y_pred_proba >= optimal_threshold).astype(int)
         
         # 평가
         auc = roc_auc_score(y_test, y_pred_proba)
         
-        # Confusion Matrix using REFINED prediction
-        cm = confusion_matrix(y_test, y_pred_refined)
+        # Confusion Matrix
+        cm = confusion_matrix(y_test, y_pred)
         
         # [OK] 백테스트 결과 저장
         from sklearn.metrics import accuracy_score, f1_score
         self.backtest_results = {
             'auc': auc,
-            'recall': recall_score(y_test, y_pred_refined),
-            'precision': precision_score(y_test, y_pred_refined, zero_division=0),
-            'f1': f1_score(y_test, y_pred_refined, zero_division=0),
-            'accuracy': accuracy_score(y_test, y_pred_refined),
+            'recall': recall_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, zero_division=0),
+            'f1': f1_score(y_test, y_pred, zero_division=0),
+            'accuracy': accuracy_score(y_test, y_pred),
             'confusion_matrix': cm,
-            'threshold': 0.25, # [FIX] Keep numeric for compatibility
-            'threshold_desc': "Dynamic (0.25/0.60)", # New metadata
+            'threshold': float(optimal_threshold), # Ensure float
+            'threshold_desc': f"Smart F1 Norm ({optimal_threshold:.2f})",
             'y_test': y_test,
-            'y_pred': y_pred_refined,
+            'y_pred': y_pred,
             'y_pred_proba': y_pred_proba,
             'X_test': X_test,
             'split_date': split_date,
@@ -1010,15 +1029,19 @@ class StructuralRiskDetector2026:
             # Full History
             'X_full': X,
             'y_full': y,
-            'y_pred_proba_full': y_pred_proba_full,
-            'y_pred_full_refined': y_pred_full_refined,
-            'bull_market_full': bull_market_full,
+            'y_pred_proba_full': self.model.predict_proba(X)[:, 1], # Raw probs for full
+            # Note: Regime Filter Removed as per request due to confusion
             'test_start_date': X_test.index[0],
             'importances': pd.DataFrame({
                 'feature': X.columns,
                 'importance': self.model.feature_importances_
             }).sort_values('importance', ascending=False)
         }
+        
+        # Smoothed Full Probs
+        self.backtest_results['y_pred_proba_full'] = pd.Series(self.backtest_results['y_pred_proba_full']).ewm(span=20).mean().values
+        # Full predictions based on optimal threshold
+        self.backtest_results['y_pred_full_refined'] = (self.backtest_results['y_pred_proba_full'] >= optimal_threshold).astype(int)
         
         return self.model
     
