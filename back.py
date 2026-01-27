@@ -895,8 +895,10 @@ class StructuralRiskDetector2026:
                 prob = raw_probs[i]
                 bull = is_bull.iloc[i]
                 
-                # Dynamic Threshold
-                threshold = 0.60 if bull else 0.25
+                # Dynamic Threshold (Relaxed)
+                # Bull: 0.60 -> 0.35 (너무 높아서 0% Recall 문제 해결)
+                # Bear: 0.25 -> 0.15 (더 민감하게)
+                threshold = 0.35 if bull else 0.15
                 
                 final_pred.append(1 if prob >= threshold else 0)
                 
