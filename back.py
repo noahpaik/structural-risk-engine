@@ -945,17 +945,17 @@ class StructuralRiskDetector2026:
         # 2. Time-Decay Sample Weights
         weights = np.linspace(0.5, 1.5, len(X_train))
         
-        # XGBoost 학습 (Dual Threshold Strategy)
+        # XGBoost 학습 (Dual Threshold Strategy - Recall Focus)
         self.model = XGBClassifier(
             n_estimators=200,        
-            max_depth=3,             # [복구] 5 -> 3 (과적합 방지)
+            max_depth=3,             # [복구] 5 -> 3 (과적합 방지, 단순화)
             learning_rate=0.05,      
             
-            # [복구] 가중치를 다시 높임 (10.0 -> 25.0)
-            # 일단 폭락을 잡는게 우선임
+            # [복구] 가중치를 다시 높여 Recall 확보
+            # 10.0 -> 25.0 (일단 폭락을 놓치지 않도록 설정)
             scale_pos_weight=25.0,    
             
-            # [복구] 규제 제거 (자유롭게 학습하도록)
+            # [복구] 규제 제거 (자유롭게 학습하도록 유도)
             gamma=0,               
             min_child_weight=1,      
             
@@ -977,13 +977,17 @@ class StructuralRiskDetector2026:
         # 확률 예측
         y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
-        # [핵심 로직] Dual Thresholding (Regime-Based)
-        # X_test에서 'volatility' 컬럼을 가져옴
-        if 'volatility' in X_test.columns:
-            vol_values = X_test['volatility'].values
-        else:
-            vol_values = np.zeros(len(X_test))
-            
+        # [핵심 필살기] VIX 레짐에 따른 이중 잣대 적용
+        # X_test에서 'volatility' 컬럼을 가져옴 (인덱스 매칭 필요)
+        # Z-score 기준이므로 0보다 크면 '고변동성', 작으면 '저변동성'
+        
+        try:
+            vol_col_idx = list(X_test.columns).index('volatility')
+            vol_values = X_test.iloc[:, vol_col_idx].values
+        except ValueError:
+            print("[WARN] 'volatility' 컬럼을 찾을 수 없어 기본 임계값 적용")
+            vol_values = np.zeros(len(y_pred_proba)) # Fallback
+
         final_preds = []
         
         for i in range(len(y_pred_proba)):
@@ -991,7 +995,7 @@ class StructuralRiskDetector2026:
             vol = vol_values[i]
             
             # Case A: 시장이 공포에 질려있을 때 (High Volatility Regime)
-            # 이미 시장이 무서워하므로, 휩소 방지를 위해 확실할 때만(0.7) 경고
+            # 이미 시장이 무서워하므로, 모델은 '확실할 때만(0.7)' 경고해야 함 (휩소 방지)
             if vol > 0.5: 
                 threshold = 0.70
                 
@@ -1004,7 +1008,11 @@ class StructuralRiskDetector2026:
         
         final_preds = np.array(final_preds)
         
-        # 평가 지표 계산
+        # ---------------------------------------------------------
+        # 결과 출력
+        # ---------------------------------------------------------
+        # from sklearn.metrics import recall_score, precision_score, f1_score, roc_auc_score # Already imported
+        
         auc = roc_auc_score(y_test, y_pred_proba)
         rec = recall_score(y_test, final_preds)
         prec = precision_score(y_test, final_preds, zero_division=0)
