@@ -35,6 +35,7 @@ class StructuralRiskDetector2026:
         }
         self.model = None
         self.backtest_results = {}
+        self.threshold = 0.5 # Default threshold
         
     # ============================================
     # LAYER 1: 변동성 구조
@@ -843,7 +844,8 @@ class StructuralRiskDetector2026:
             print("[WARN] 학습 데이터에 Crash 없음. Dummy Model 사용.")
             pos_weight = 1.0
         else:
-            pos_weight = len(y_train[y_train==0]) / len(y_train[y_train==1])
+            # [SENSITIVITY BOOST] 가중치 2 배 적용
+            pos_weight = (len(y_train[y_train==0]) / len(y_train[y_train==1])) * 2.0
             print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
         # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
@@ -898,6 +900,8 @@ class StructuralRiskDetector2026:
         if optimal_threshold < 0.10:
              # print(f"[WARN] Calculated threshold {optimal_threshold:.3f} is too low. Enforcing floor 0.10") # OSError workaround
              optimal_threshold = 0.10
+        
+        self.threshold = optimal_threshold
         
         y_pred = (y_pred_proba >= optimal_threshold).astype(int)
         
@@ -1135,10 +1139,12 @@ class StructuralRiskDetector2026:
         
         # Dynamic threshold 적용 고려 (여기서는 보수적으로 0.35 or use saved threshold if implemented)
         # 단순히 절대 확률로 등급 매김
+        # Dynamic Threshold 적용
+        thr = self.threshold
         risk_level = (
-            '[HIGH] Critical' if crash_proba > 0.6 else
-            '[HIGH] High' if crash_proba > 0.4 else
-            '[ELEVATED] Elevated' if crash_proba > 0.25 else
+            '[HIGH] Critical' if crash_proba > thr * 1.5 else
+            '[HIGH] High' if crash_proba > thr else
+            '[ELEVATED] Elevated' if crash_proba > thr * 0.7 else
             '[NORMAL] Normal'
         )
         

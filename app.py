@@ -30,7 +30,7 @@ st.sidebar.markdown("---")
 # 모델 초기화 (캐시)
 # 모델 초기화 (캐시)
 @st.cache_resource
-def load_detector_v10():
+def load_detector_v11():
     """모델 로드"""
     try:
         # 1. Streamlit Secrets (Cloud 배포용)
@@ -47,25 +47,25 @@ def load_detector_v10():
     return StructuralRiskDetector2026(fred_api_key=api_key)
 
 @st.cache_data(ttl=3600)
-def load_data_v9(_detector):
+def load_data_v11(_detector):
     """데이터 로드 (모델 학습 제외)"""
     with st.spinner('데이터 로딩 중...'):
         df = _detector.prepare_training_data(start_date='2018-01-01', end_date='2026-01-27')
     return df
 
 @st.cache_resource
-def run_training_v9(_detector, df):
+def run_training_v11(_detector, df):
     """모델 학습 (별도 캐시)"""
     with st.spinner('모델 학습 및 백테스트 중...'):
         _detector.train_model(df, split_date='2023-01-01')
     return _detector
 
 # 모델 및 데이터 로드
-detector = load_detector_v10()
+detector = load_detector_v11()
 if detector is None:
     st.stop()
-df = load_data_v9(detector)
-detector = run_training_v9(detector, df)
+df = load_data_v11(detector)
+detector = run_training_v11(detector, df)
 
 # [DEBUG] 데이터 로드 확인
 # st.success(f"데이터 로드 완료 (Shape: {df.shape})")
@@ -137,7 +137,7 @@ if page == "🏠 Home - 현재 위험":
                 'threshold': {
                     'line': {'color': "red", 'width': 4},
                     'thickness': 0.75,
-                    'value': 20
+                    'value': detector.threshold * 100
                 }
             }
         ))
@@ -256,8 +256,9 @@ elif page == "📈 Backtest 결과":
                  )
 
         # 2. Probability
+        thr = results.get('threshold', 0.5)
         fig_full.add_trace(go.Scatter(x=X_full.index, y=y_pred_proba_full, mode='lines', name='Prob', line=dict(color='darkred', width=1)), row=2, col=1)
-        fig_full.add_hline(y=0.5, line_dash="dash", line_color="red", row=2, col=1, annotation_text="Threshold 0.5")
+        fig_full.add_hline(y=thr, line_dash="dash", line_color="red", row=2, col=1, annotation_text=f"Threshold {thr:.3f}")
         
         # 3. Signals
         for col, color in zip(['volatility', 'bond_stress', 'eco_surprise'], ['#1f77b4', '#ff7f0e', '#2ca02c']):
