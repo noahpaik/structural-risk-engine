@@ -45,10 +45,12 @@
 ### 🧠 2. 모델 설정 (Model Configuration)
 최근 시장 트렌드와 위기 상황을 더 민감하게 포착하도록 튜닝되었습니다.
 
-- **알고리즘**: XGBoost Classifier
+- **알고리즘**: **XGBoost Classifier**
+    - **선정 이유**: 금융 데이터의 비선형적 관계를 효과적으로 학습하고, 과적합(Overfitting) 제어에 뛰어납니다. HMM(Regime Switching)의 구조적 변화 개념은 7가지 리스크 레이어(Layer)에 선반영되어 있으며, 최종 판단은 XGBoost가 수행합니다.
 - **Crash 정의 (Target)**: 향후 20일 내 **-7% 이상 하락** (기존 -10%에서 완화하여 민감도 증가)
 - **학습 가중치 (Sensitivity)**: 폭락 데이터(Class 1)에 **5배(5.0x)** 가중치를 부여하여 작은 신호도 놓치지 않도록 설정 (Aggressive Tuning)
 - **임계값 (Threshold)**: F2-Score(Recall 중시)를 최대화하는 값을 동적으로 찾되, **최소 0.25** 이상으로 유지
+- **출력 평활화 (Smoothing)**: 확률값의 노이즈를 줄이기 위해 **20일 지수이동평균(EMA 20)**을 후처리로 적용하여 신뢰도 있는 추세만을 반영
 
 ---
 
