@@ -30,10 +30,20 @@ st.sidebar.markdown("---")
 # 모델 초기화 (캐시)
 # 모델 초기화 (캐시)
 @st.cache_resource
-def load_detector_v9():
+def load_detector_v10():
     """모델 로드"""
-    with open('api.txt', 'r') as f:
-        api_key = f.read().strip()
+    try:
+        # 1. Streamlit Secrets (Cloud 배포용)
+        if 'FRED_API_KEY' in st.secrets:
+            api_key = st.secrets['FRED_API_KEY']
+        # 2. 로컬 파일 (개발용)
+        else:
+            with open('api.txt', 'r') as f:
+                api_key = f.read().strip()
+    except Exception as e:
+        st.error(f"API 키 로드 실패: {e}. Streamlit Cloud Secrets에 'FRED_API_KEY'를 설정하거나 로컬에 'api.txt'가 있는지 확인하세요.")
+        return None
+        
     return StructuralRiskDetector2026(fred_api_key=api_key)
 
 @st.cache_data(ttl=3600)
@@ -51,7 +61,9 @@ def run_training_v9(_detector, df):
     return _detector
 
 # 모델 및 데이터 로드
-detector = load_detector_v9()
+detector = load_detector_v10()
+if detector is None:
+    st.stop()
 df = load_data_v9(detector)
 detector = run_training_v9(detector, df)
 
