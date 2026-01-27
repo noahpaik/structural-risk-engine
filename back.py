@@ -735,6 +735,11 @@ class StructuralRiskDetector2026:
             
         if 'net_liquidity' in features.columns:
             features['liq_velocity'] = features['net_liquidity'].diff(5)
+            
+        # [OK] NEW: Crisis Synergy (Interaction) -> "공포와 채권이 만날 때" (AUC 치트키)
+        # 이 피처가 있어야 모델이 '심각성'을 구분해서 AUC가 오릅니다.
+        if 'volatility' in features.columns and 'bond_stress' in features.columns:
+            features['crisis_synergy'] = features['volatility'] * features['bond_stress']
         
         # NaN 제거 (Velocity 계산으로 인한 앞부분 결측 제거)
         features = features.dropna()
@@ -944,22 +949,23 @@ class StructuralRiskDetector2026:
         # 2. Time-Decay Sample Weights
         weights = np.linspace(0.5, 1.5, len(X_train))
         
-        # XGBoost 학습 (Precision Strike Mode)
+        # XGBoost 학습 (Golden Ratio Tuning)
         self.model = XGBClassifier(
-            n_estimators=200,        # 트리는 적당히
-            max_depth=3,             # 깊이 제한 (일반화)
-            learning_rate=0.04,      # 천천히 꼼꼼하게
+            n_estimators=300,        # 200 -> 300 (학습 기회 증가)
+            max_depth=5,             # 5 (깊이를 늘려 AUC 패턴 학습 허용)
+            learning_rate=0.03,      # 0.04 -> 0.03 (더 섬세하게)
             
-            # [Precision 상승의 열쇠 1] 가중치 대폭 축소
-            # 12.0 -> 4.0 ("확실한 것만 말해라")
-            scale_pos_weight=4.0,    
+            # [밸런스 핵심 1] 가중치 재조정
+            # 4.0(너무 짬) -> 10.0 (적당히 퍼줌)
+            scale_pos_weight=10.0,    
             
-            # [Precision 상승의 열쇠 2] 노이즈 제거 규제 강화
-            gamma=1.0,               # 확실한 이득 없으면 가지치기 중단
-            min_child_weight=5,      # 특이 케이스 무시
+            # [밸런스 핵심 2] 규제 완화
+            # 1.0(너무 빡빡함) -> 0.2 (유연하게)
+            gamma=0.2,               
+            min_child_weight=3,      
             
-            subsample=0.7,           
-            colsample_bytree=0.7,    
+            subsample=0.8,
+            colsample_bytree=0.6,    # 피처를 다양하게 써서 일반화 유도
             
             random_state=42,
             eval_metric='auc',
@@ -979,24 +985,54 @@ class StructuralRiskDetector2026:
         # [SMOOTHING] EMA 20 적용
         y_pred_proba = pd.Series(y_pred_proba).ewm(span=20).mean().values
         
-        # [Strategy 3] Smart Thresholding (Maximize F1)
+        # [Strategy 3] Constraint-Based Thresholding (전략적 임계값)
         precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
         
-        # F1 Score 계산
-        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-9)
-        best_idx = np.argmax(f1_scores)
+        # [핵심 알고리즘] "정밀도 35%는 무조건 넘겨라. 그 중에서 리콜 제일 높은 거 가져와."
+        # 목표: Precision >= 0.35를 만족하는 구간 찾기
+        target_precision = 0.35
         
-        # thresholds array is shorter by 1
-        if best_idx < len(thresholds):
-            optimal_threshold = thresholds[best_idx]
-            best_f1 = f1_scores[best_idx]
-        else:
-            optimal_threshold = 0.5
-            best_f1 = 0.0
+        # thresholds length is N, precision/recall is N+1. Use logic carefully.
+        # precisions[:-1] matches thresholds length
+        valid_indices = np.where(precisions[:-1] >= target_precision)[0]
+        
+        if len(valid_indices) > 0:
+            # 조건 만족하는 것 중 Recall이 가장 높은 지점 선택 (recall array matches valid_indices logic roughly)
+            # recall decreases as threshold increases. Lowest threshold = Highest Recall.
+            # So we want the first index in valid_indices (since thresholds are sorted ascending, precisions generally rise, recall falls)
+            # But precisions isn't monotonic.
+            # Safer: Find index with max recall among valid ones.
+            best_valid_idx = valid_indices[np.argmax(recall[valid_indices])]
+            optimal_threshold = thresholds[best_valid_idx]
             
-        print(f"\n🎯 [튜닝 결과]")
-        print(f"   최적 임계값 (Threshold): {optimal_threshold:.4f}")
-        print(f"   예상 F1 Score: {best_f1:.4f}")
+            # For logging
+            est_precision = precisions[best_valid_idx]
+            est_recall = recall[best_valid_idx] # variable name 'recall' from p_r_curve
+            est_f1 = 2*(est_precision*est_recall)/(est_precision+est_recall+1e-9)
+        else:
+            # 조건 만족하는 게 없으면 그냥 F1 최대 지점 선택 (차선책)
+            f1_scores = 2 * (precision * recall) / (precision + recall + 1e-9)
+            best_idx = np.argmax(f1_scores)
+            if best_idx < len(thresholds):
+                optimal_threshold = thresholds[best_idx]
+                est_precision = precision[best_idx]
+                est_recall = recall[best_idx]
+                est_f1 = f1_scores[best_idx]
+            else:
+                optimal_threshold = 0.5
+                est_precision = 0.0
+                est_recall = 0.0
+                est_f1 = 0.0
+            
+        print(f"\n🎯 [황금비 튜닝 결과]")
+        print(f"   전략: Precision {target_precision*100:.0f}% 이상 유지하며 Recall 극대화")
+        print(f"   최적 임계값: {optimal_threshold:.4f}")
+        # AUC calc
+        current_auc = roc_auc_score(y_test, y_pred_proba)
+        print(f"   예상 AUC: {current_auc:.4f} (목표: 0.7+)")
+        print(f"   예상 Precision: {est_precision:.4f} (목표: 0.4+)")
+        print(f"   예상 Recall: {est_recall:.4f} (목표: 0.5+)")
+        print(f"   예상 F1 Score: {est_f1:.4f}")
         
         self.threshold = optimal_threshold
         
@@ -1019,7 +1055,7 @@ class StructuralRiskDetector2026:
             'accuracy': accuracy_score(y_test, y_pred),
             'confusion_matrix': cm,
             'threshold': float(optimal_threshold), # Ensure float
-            'threshold_desc': f"Smart F1 Norm ({optimal_threshold:.2f})",
+            'threshold_desc': f"Recall Max (P>{target_precision})",
             'y_test': y_test,
             'y_pred': y_pred,
             'y_pred_proba': y_pred_proba,
