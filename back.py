@@ -986,7 +986,7 @@ class StructuralRiskDetector2026:
         y_pred_proba = pd.Series(y_pred_proba).ewm(span=20).mean().values
         
         # [Strategy 3] Constraint-Based Thresholding (전략적 임계값)
-        precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
+        precisions, recalls, thresholds = precision_recall_curve(y_test, y_pred_proba)
         
         # [핵심 알고리즘] "정밀도 35%는 무조건 넘겨라. 그 중에서 리콜 제일 높은 거 가져와."
         # 목표: Precision >= 0.35를 만족하는 구간 찾기
@@ -997,26 +997,22 @@ class StructuralRiskDetector2026:
         valid_indices = np.where(precisions[:-1] >= target_precision)[0]
         
         if len(valid_indices) > 0:
-            # 조건 만족하는 것 중 Recall이 가장 높은 지점 선택 (recall array matches valid_indices logic roughly)
-            # recall decreases as threshold increases. Lowest threshold = Highest Recall.
-            # So we want the first index in valid_indices (since thresholds are sorted ascending, precisions generally rise, recall falls)
-            # But precisions isn't monotonic.
-            # Safer: Find index with max recall among valid ones.
-            best_valid_idx = valid_indices[np.argmax(recall[valid_indices])]
+            # 조건 만족하는 것 중 Recall이 가장 높은 지점 선택
+            best_valid_idx = valid_indices[np.argmax(recalls[valid_indices])]
             optimal_threshold = thresholds[best_valid_idx]
             
             # For logging
             est_precision = precisions[best_valid_idx]
-            est_recall = recall[best_valid_idx] # variable name 'recall' from p_r_curve
+            est_recall = recalls[best_valid_idx]
             est_f1 = 2*(est_precision*est_recall)/(est_precision+est_recall+1e-9)
         else:
             # 조건 만족하는 게 없으면 그냥 F1 최대 지점 선택 (차선책)
-            f1_scores = 2 * (precision * recall) / (precision + recall + 1e-9)
+            f1_scores = 2 * (precisions * recalls) / (precisions + recalls + 1e-9)
             best_idx = np.argmax(f1_scores)
             if best_idx < len(thresholds):
                 optimal_threshold = thresholds[best_idx]
-                est_precision = precision[best_idx]
-                est_recall = recall[best_idx]
+                est_precision = precisions[best_idx]
+                est_recall = recalls[best_idx]
                 est_f1 = f1_scores[best_idx]
             else:
                 optimal_threshold = 0.5
