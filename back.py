@@ -724,29 +724,17 @@ class StructuralRiskDetector2026:
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
         
-        # [OK] NEW: Cheat Code 1 & 3 (Feature Interaction & Regime Awareness)
-        # 1. Regime Features (추세 반영)
-        ma200 = spy_close.rolling(200).mean()
-        dist_ma200 = (spy_close - ma200) / ma200
+        # [OK] NEW: Back to Basics (Delta Focus)
+        # 복잡한 Interaction/Regime 제거하고 변화량(Delta)에 집중
         
-        # Reindex to features index
-        features['dist_ma200'] = dist_ma200.reindex(features.index).ffill()
-        
-        # Volatility Regime (Relative Vol)
         if 'volatility' in features.columns:
-            vol_ma60 = features['volatility'].rolling(60).mean()
-            features['vol_regime'] = features['volatility'] - vol_ma60
-
-        # 2. Synergy Features (Interaction) -> "겹악재"
-        if 'volatility' in features.columns and 'bond_stress' in features.columns:
-            features['vol_bond_interact'] = features['volatility'] * features['bond_stress']
+            features['vol_change_5d'] = features['volatility'].diff(5)
             
-        if 'volatility' in features.columns and 'net_liquidity' in features.columns:
-             # Liquidity (-) when bad, so * -1 to make positive risk
-             features['vol_liq_interact'] = features['volatility'] * (features['net_liquidity'] * -1)
-             
-        if 'volatility_accel' in features.columns and 'bond_stress_accel' in features.columns:
-             features['accel_combo'] = features['volatility_accel'] * features['bond_stress_accel']
+        if 'bond_stress' in features.columns:
+            features['bond_change_5d'] = features['bond_stress'].diff(5)
+            
+        if 'net_liquidity' in features.columns:
+            features['liq_change_5d'] = features['net_liquidity'].diff(5)
         
         # [USER REQUEST] Eco Surprise 영향력 축소 (De-powering)
         # 1. 신호 강도(Magnitude) 50% 축소
@@ -955,16 +943,16 @@ class StructuralRiskDetector2026:
         
         # XGBoost 학습
         self.model = XGBClassifier(
-            n_estimators=500,        # [Cheat Code 2] 300 -> 500
-            max_depth=5,             # [Cheat Code 2] 4 -> 5
-            learning_rate=0.03,      # [Cheat Code 2] 0.05 -> 0.03 (Slower)
-            subsample=0.7,           # [Cheat Code 2] 0.8 -> 0.7
-            colsample_bytree=0.7,    # [Cheat Code 2] 0.8 -> 0.7
-            gamma=0.2,               # [Cheat Code 2] Noise Cut
-            min_child_weight=3,      # [Cheat Code 2] Outlier Ignore
-            scale_pos_weight=pos_weight,  
+            n_estimators=200,        # [Fix] 500 -> 200 (Prevent Overfitting)
+            max_depth=3,             # [Fix] 5 -> 3 (Generalization)
+            learning_rate=0.05,      # [Fix] 0.03 -> 0.05
+            subsample=0.7,
+            colsample_bytree=0.7,
+            gamma=0,                 # [Fix] Remove restrictions
+            min_child_weight=1,      # [Fix] Remove restrictions
+            scale_pos_weight=12.0,   # [Fix] 8.0 -> 12.0 (Boost Recall)
             random_state=42,
-            eval_metric='auc',       # [Cheat Code 2] Explicit AUC
+            eval_metric='auc',
             n_jobs=-1
         )
         
