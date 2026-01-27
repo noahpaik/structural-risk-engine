@@ -874,6 +874,9 @@ class StructuralRiskDetector2026:
         # 예측 확률
         y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
+        # [SMOOTHING] EMA 20 적용 (Noise Reduction)
+        y_pred_proba = pd.Series(y_pred_proba).ewm(span=20).mean().values
+        
         # 3. Dynamic Thresholding (Maximize F2-Score)
         # F2-Score: Recall에 Precision보다 2배 더 가중치 (Beta=2)
         precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
@@ -1002,6 +1005,9 @@ class StructuralRiskDetector2026:
         
         # Predict on FULL dataset for visualization
         y_pred_proba_full = self.model.predict_proba(X)[:, 1]
+        
+        # [SMOOTHING] EMA 20 적용
+        y_pred_proba_full = pd.Series(y_pred_proba_full).ewm(span=20).mean().values
 
         # 저장
         self.backtest_results.update({
@@ -1127,13 +1133,16 @@ class StructuralRiskDetector2026:
         X = df.drop('crash', axis=1)
         current_features = X.iloc[-1:].copy()
         
-        # 예측
-        proba = self.model.predict_proba(current_features)
-        if proba.shape[1] > 1:
-            crash_proba = proba[0, 1]
-        else:
-            # 학습 데이터에 폭락이 없어서 모델이 Class 0만 예측하는 경우
-            crash_proba = 0.0
+        # 예측 (Smoothing 적용을 위해 최근 100일 사용)
+        X_window = X.iloc[-100:] if len(X) > 100 else X
+        proba_window = self.model.predict_proba(X_window)[:, 1]
+        
+        # [SMOOTHING] EMA 20 적용
+        smoothed_proba = pd.Series(proba_window).ewm(span=20).mean()
+        crash_proba = smoothed_proba.iloc[-1]
+        
+        if len(proba_window) == 0:
+             crash_proba = 0.0
         
         # 위험 등급
         
