@@ -720,14 +720,18 @@ class StructuralRiskDetector2026:
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
         
-        # [USER REQUEST] Eco Surprise 정밀 튜닝 (살리고 가둔다)
-        if 'eco_surprise_duration' in features.columns:
-             # 1. 30일 -> 10일 상한 제한 (Clip)
-             features['eco_surprise_duration'] = features['eco_surprise_duration'].clip(upper=10)
+        # [USER REQUEST] Eco Surprise 영향력 축소 (De-powering)
+        
+        # 1. 신호 강도(Magnitude) 50% 축소
+        if 'eco_surprise' in features.columns:
+             features['eco_surprise'] = features['eco_surprise'] * 0.5
              
         if 'eco_surprise_accel' in features.columns:
-             # 2. 가속도 정보 스무딩 (Noise Reduction)
-             features['eco_surprise_accel'] = features['eco_surprise_accel'].rolling(3).mean().fillna(0)
+             features['eco_surprise_accel'] = features['eco_surprise_accel'] * 0.5
+             
+        # 2. 지속기간(Duration)에 로그(Log) 적용 (선형 -> 로그형 감쇄)
+        if 'eco_surprise_duration' in features.columns:
+             features['eco_surprise_duration'] = np.log1p(features['eco_surprise_duration'])
              
         returns = spy_close.pct_change()
         
