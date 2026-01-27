@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 
 class StructuralRiskDetector2026:
     """
-    2026년 1월 27일 기준 최종 버전
+    2026년 1월 26일 기준 최종 버전
     - SOFR 반영
     - Regime-conditional Z-score
     - Path-dependent features
@@ -133,118 +133,117 @@ class StructuralRiskDetector2026:
     
     def get_bond_stress_divergence(self, start_date='2018-01-01'):
         """
-        SOFR-Treasury + MOVE-VIX Divergence + Curve
+        SOFR-Treasury + MOVE-VIX Divergence + Curve (Robust: TLT Fallback & Alignment)
         """
         # print("[INFO] 채권 스트레스 계산 중...")
         
         try:
-            # Helper for safe data fetching
-            def get_data(ticker):
-                df = yf.download(ticker, start=start_date, progress=False)
-                if df.empty: return pd.Series(dtype=float)
-                
-                # [FIX] Timezone Strip immediately
-                if df.index.tz is not None:
-                    df.index = df.index.tz_localize(None)
+            # 1. Helper for safe data fetching & Timezone Stripping
+            def load_clean(ticker):
+                try:
+                    df = yf.download(ticker, start=start_date, progress=False)
+                    if df.empty: return pd.Series(dtype=float)
                     
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                if 'Close' in df.columns:
-                    data = df['Close']
-                else:
-                    data = df.iloc[:, 0]
-                if isinstance(data, pd.DataFrame):
-                    data = data.iloc[:, 0] # Force 1D
-                return data
+                    if isinstance(df.columns, pd.MultiIndex):
+                        df.columns = df.columns.get_level_values(0)
+                        
+                    data = df['Close'] if 'Close' in df.columns else df.iloc[:, 0]
+                    if isinstance(data, pd.DataFrame): 
+                        data = data.iloc[:, 0]
+                        
+                    # Timezone Strip
+                    if data.index.tz is not None:
+                        data.index = data.index.tz_localize(None)
+                    
+                    return data
+                except:
+                    return pd.Series(dtype=float)
 
-            # 0. Reference Index (Safe FRED Data)
-            try:
-                yield_10y = self.fred.get_series('DGS10', observation_start=start_date)
-            except:
-                yield_10y = pd.Series(dtype=float)
+            # 2. 로드 VIX (Anchor) & MOVE
+            vix = load_clean('^VIX')
+            move = load_clean('^MOVE')
+            
+            # [Fallback] MOVE 누락 시 TLT 변동성 사용
+            if move.empty or len(move) < 10:
+                # print("⚠️ ^MOVE 데이터 누락 → TLT 변동성으로 대체합니다.")
+                tlt = load_clean('TLT')
+                if not tlt.empty:
+                    # TLT 20일 변동성 (표준편차 * 100) -> MOVE Scale 흉내
+                    move = tlt.pct_change().rolling(20).std() * 100
+            
+            # 3. Align VIX & MOVE
+            if vix.empty:
+                return pd.Series(dtype=float)
+                
+            combined = pd.DataFrame({'vix': vix, 'move': move}).sort_index()
+            combined = combined.ffill().dropna()
+            
+            vix = combined['vix']
+            move = combined['move']
+            anchor_index = vix.index
+            
+            # 4. Divergence Calculation
+            move_norm = (move - move.rolling(60).mean()) / move.rolling(60).std()
+            vix_norm = (vix - vix.rolling(60).mean()) / vix.rolling(60).std()
+            
+            leading_signal = (move_norm - vix_norm).clip(lower=0)
+            confirmation = np.minimum(move_norm, vix_norm).clip(lower=0)
+            divergence = 0.6 * leading_signal + 0.4 * confirmation
+            
+            # 5. FRED Data Integration (Align to VIX index)
+            def get_fred_aligned(series_id):
+                try:
+                    s = self.fred.get_series(series_id, observation_start=start_date)
+                    if s.index.tz is not None:
+                        s.index = s.index.tz_localize(None)
+                    # Align to VIX
+                    s = s.reindex(anchor_index).ffill()
+                    return s
+                except:
+                    return pd.Series(dtype=float, index=anchor_index)
 
-            # MOVE-VIX Divergence
-            move = get_data('^MOVE')
-            vix = get_data('^VIX')
+            # SOFR Stress
+            sofr = get_fred_aligned('SOFR')
+            treasury_3m = get_fred_aligned('DGS3MO')
+            effr = get_fred_aligned('EFFR')
             
-            divergence = pd.Series(dtype=float)
+            if sofr.isna().all(): sofr = effr # Fallback
             
-            if not move.empty and not vix.empty:
-                # Option C: Conditional Combination (Leading vs Confirmation)
-                move_norm = (move - move.rolling(60).mean()) / move.rolling(60).std()
-                vix_norm = (vix - vix.rolling(60).mean()) / vix.rolling(60).std()
-                
-                # 1. Leading Signal (채권이 먼저 반응)
-                leading_signal = (move_norm - vix_norm).clip(lower=0)
-                
-                # 2. Confirmation (둘 다 높음 - 동반 패닉)
-                confirmation = np.minimum(move_norm, vix_norm).clip(lower=0) 
-    
-                # 결합
-                divergence = 0.6 * leading_signal + 0.4 * confirmation
-            else:
-                # print("[WARN] MOVE Index 누락 -> Divergence 제외하고 계산")
-                pass
+            sofr_3m = sofr.rolling(63).mean()
+            sofr_spread = (sofr_3m - treasury_3m)
             
-            # SOFR-Treasury Spread
-            try:
-                sofr = self.fred.get_series('SOFR', observation_start=start_date)
-                treasury_3m = self.fred.get_series('DGS3MO', observation_start=start_date)
+            # Helper for Z-score (Global like before, but safe)
+            def safe_zscore(s):
+                if s.isna().all(): return s
+                return (s - s.mean()) / s.std()
                 
-                # SOFR 3개월 평균
-                sofr_3m = sofr.rolling(63).mean()
-                sofr_spread = (sofr_3m - treasury_3m).dropna()
-                sofr_val = sofr_spread.values.flatten()
-                sofr_stress = stats.zscore(sofr_val)
-                sofr_stress = pd.Series(sofr_stress, index=sofr_spread.index)
-                
-                # print(f"  [OK] SOFR 데이터: {len(sofr)} 포인트")
-            except Exception as e:
-                # print(f"  [WARN]  SOFR 로드 실패, EFFR 사용: {e}")
-                effr = self.fred.get_series('EFFR', observation_start=start_date)
-                treasury_3m = self.fred.get_series('DGS3MO', observation_start=start_date)
-                effr_spread = (effr - treasury_3m).dropna()
-                sofr_val = effr_spread.values.flatten()
-                sofr_stress = stats.zscore(sofr_val)
-                sofr_stress = pd.Series(sofr_stress, index=effr_spread.index)
+            sofr_stress = safe_zscore(sofr_spread)
             
-            # High Yield Spread (보조)
-            try:
-                hy_spread = self.fred.get_series('BAMLH0A0HYM2', observation_start=start_date)
-                hy_stress = stats.zscore(hy_spread.dropna())
-                if not isinstance(hy_stress, pd.Series):
-                    hy_stress = pd.Series(hy_stress, index=hy_spread.dropna().index)
-            except:
-                hy_stress = pd.Series(dtype=float)
+            # High Yield
+            hy_spread = get_fred_aligned('BAMLH0A0HYM2')
+            hy_stress = safe_zscore(hy_spread)
             
             # Yield Curve
-            try:
-                yield_10y = self.fred.get_series('DGS10', observation_start=start_date)
-                yield_2y = self.fred.get_series('DGS2', observation_start=start_date)
-                curve = yield_10y - yield_2y
-                inversion = -curve.clip(upper=0)
-                inversion_stress = stats.zscore(inversion.dropna())
-                if not isinstance(inversion_stress, pd.Series):
-                    inversion_stress = pd.Series(inversion_stress, index=inversion.dropna().index)
-            except:
-                inversion_stress = pd.Series(dtype=float)
-            
-            # 통합
+            yield_10y = get_fred_aligned('DGS10')
+            yield_2y = get_fred_aligned('DGS2')
+            curve = yield_10y - yield_2y
+            inversion = -curve.clip(upper=0)
+            inversion_stress = safe_zscore(inversion)
+
+            # 6. Combine
             bond_df = pd.DataFrame({
                 'divergence': divergence,
                 'credit_stress': sofr_stress,
                 'hy_stress': hy_stress,
                 'inversion': inversion_stress
-            })
+            }, index=anchor_index)
             
             bond_signal = bond_df.mean(axis=1, skipna=True)
-            
-            # print(f"[OK] 채권 데이터: {len(bond_signal)} 포인트")
             return bond_signal
             
         except Exception as e:
-            # print(f"[ERROR] 채권 스트레스 오류: {e}")
-            return pd.Series()
+            # print(f"[ERROR] Bond Stress Failed: {e}")
+            return pd.Series(dtype=float)
     
     # ============================================
     # LAYER 3: 경제 서프라이즈
