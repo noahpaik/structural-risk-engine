@@ -162,27 +162,24 @@ class StructuralRiskDetector2026:
             move = get_data('^MOVE')
             vix = get_data('^VIX')
             
-            if move.empty or vix.empty:
-                 # print("[WARN]  MOVE/VIX 데이터 누락")
-                 if not vix.empty:
-                     return pd.Series(0, index=vix.index)
-                 elif not yield_10y.empty:
-                     return pd.Series(0, index=yield_10y.index)
-                 return pd.Series()
+            divergence = pd.Series(dtype=float)
             
-            # Option C: Conditional Combination (Leading vs Confirmation)
-            move_norm = (move - move.rolling(60).mean()) / move.rolling(60).std()
-            vix_norm = (vix - vix.rolling(60).mean()) / vix.rolling(60).std()
-            
-            # 1. Leading Signal (채권이 먼저 반응)
-            leading_signal = (move_norm - vix_norm).clip(lower=0)
-            
-            # 2. Confirmation (둘 다 높음 - 동반 패닉)
-            # element-wise min (clip to 0 to avoid dragging down signal)
-            confirmation = np.minimum(move_norm, vix_norm).clip(lower=0) 
-
-            # 결합 (0.6 * Leading + 0.4 * Confirmation)
-            divergence = 0.6 * leading_signal + 0.4 * confirmation
+            if not move.empty and not vix.empty:
+                # Option C: Conditional Combination (Leading vs Confirmation)
+                move_norm = (move - move.rolling(60).mean()) / move.rolling(60).std()
+                vix_norm = (vix - vix.rolling(60).mean()) / vix.rolling(60).std()
+                
+                # 1. Leading Signal (채권이 먼저 반응)
+                leading_signal = (move_norm - vix_norm).clip(lower=0)
+                
+                # 2. Confirmation (둘 다 높음 - 동반 패닉)
+                confirmation = np.minimum(move_norm, vix_norm).clip(lower=0) 
+    
+                # 결합
+                divergence = 0.6 * leading_signal + 0.4 * confirmation
+            else:
+                # print("[WARN] MOVE Index 누락 -> Divergence 제외하고 계산")
+                pass
             
             # SOFR-Treasury Spread
             try:

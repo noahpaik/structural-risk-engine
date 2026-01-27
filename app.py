@@ -30,7 +30,7 @@ st.sidebar.markdown("---")
 # 모델 초기화 (캐시)
 # 모델 초기화 (캐시)
 @st.cache_resource
-def load_detector_v19():
+def load_detector_v20():
     """모델 로드"""
     try:
         # 1. Streamlit Secrets (Cloud 배포용)
@@ -47,25 +47,25 @@ def load_detector_v19():
     return StructuralRiskDetector2026(fred_api_key=api_key)
 
 @st.cache_data(ttl=3600)
-def load_data_v19(_detector):
+def load_data_v20(_detector):
     """데이터 로드 (모델 학습 제외)"""
     with st.spinner('데이터 로딩 중...'):
-        df = _detector.prepare_training_data(start_date='2018-01-01', end_date='2026-01-26')
+        df = _detector.prepare_training_data(start_date='2018-01-01', end_date='2026-01-27')
     return df
 
 @st.cache_resource
-def run_training_v19(_detector, df):
+def run_training_v20(_detector, df):
     """모델 학습 (별도 캐시)"""
     with st.spinner('모델 학습 및 백테스트 중...'):
         _detector.train_model(df, split_date='2023-01-01')
     return _detector
 
 # 모델 및 데이터 로드
-detector = load_detector_v19()
+detector = load_detector_v20()
 if detector is None:
     st.stop()
-df = load_data_v19(detector)
-detector = run_training_v19(detector, df)
+df = load_data_v20(detector)
+detector = run_training_v20(detector, df)
 
 # [DEBUG] 데이터 로드 확인
 # st.success(f"데이터 로드 완료 (Shape: {df.shape})")
