@@ -142,6 +142,11 @@ class StructuralRiskDetector2026:
             def get_data(ticker):
                 df = yf.download(ticker, start=start_date, progress=False)
                 if df.empty: return pd.Series(dtype=float)
+                
+                # [FIX] Timezone Strip immediately
+                if df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
+                    
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 if 'Close' in df.columns:
