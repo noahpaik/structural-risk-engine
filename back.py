@@ -983,7 +983,8 @@ class StructuralRiskDetector2026:
             'f1': f1_score(y_test, y_pred_refined, zero_division=0),
             'accuracy': accuracy_score(y_test, y_pred_refined),
             'confusion_matrix': cm,
-            'threshold': "Dynamic (0.25/0.60)",
+            'threshold': 0.25, # [FIX] Keep numeric for compatibility
+            'threshold_desc': "Dynamic (0.25/0.60)", # New metadata
             'y_test': y_test,
             'y_pred': y_pred_refined,
             'y_pred_proba': y_pred_proba,
