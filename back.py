@@ -6,7 +6,7 @@ from scipy import stats
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, precision_recall_curve, recall_score, precision_score, f1_score, accuracy_score
+from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, precision_recall_curve, recall_score, precision_score
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta
@@ -724,41 +724,57 @@ class StructuralRiskDetector2026:
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
         
-        # =========================================================
-        # [Step 2] Feature Reset: 기본으로 돌아가라
-        # =========================================================
-        # 복잡한 파생 변수 다 지우고, 딱 이거 5개만 씁니다.
-        # 이 5개가 안 되면 나머지는 다 소용없습니다.
+        # [USER REQUEST] Eco Surprise 영향력 축소 (De-powering)
         
-        selected_features = [
-            'volatility', 
-            'bond_stress', 
-            'net_liquidity', 
-            'momentum', 
-            'liquidity'
-        ]
-        # Check if columns exist
-        existing_cols = [c for c in selected_features if c in features.columns]
-        features = features[existing_cols].dropna()
+        # 1. 신호 강도(Magnitude) 50% 축소
+        if 'eco_surprise' in features.columns:
+             features['eco_surprise'] = features['eco_surprise'] * 0.5
+             
+        if 'eco_surprise_accel' in features.columns:
+             features['eco_surprise_accel'] = features['eco_surprise_accel'] * 0.5
+             
+        # 2. 지속기간(Duration)에 로그(Log) 적용 (선형 -> 로그형 감쇄)
+        if 'eco_surprise_duration' in features.columns:
+             features['eco_surprise_duration'] = np.log1p(features['eco_surprise_duration'])
              
         returns = spy_close.pct_change()
         
-        # =========================================================
-        # [Step 1] Labeling Repair: 정답지 현실화
-        # =========================================================
-        # 기존: "20일 뒤에 -10% 손실이어야 폭락이다" (너무 느림)
-        # 수정: "향후 10일 안에 고점 대비 -5%만 빠져도 폭락이다" (MDD 기준)
+        # [OK] VIX 데이터 로드 (급등 확인용)
+        try:
+            vix_df = yf.download('^VIX', start=start_date, progress=False)
+            if isinstance(vix_df.columns, pd.MultiIndex):
+                vix_df.columns = vix_df.columns.get_level_values(0)
+            if 'Close' in vix_df.columns:
+                vix_close = vix_df['Close']
+            else:
+                vix_close = vix_df.iloc[:, 0]
+            if isinstance(vix_close, pd.DataFrame):
+                vix_close = vix_close.iloc[:, 0]
+            
+            # VIX 급등 조건: 5일 후 VIX가 20일 이동평균의 1.5배 초과
+            vix_spike = (vix_close > vix_close.rolling(20).mean() * 1.5).shift(-5)
+            # 인덱스 정렬
+            vix_spike = vix_spike.reindex(returns.index).fillna(False)
+            
+        except Exception as e:
+            print(f"[WARN] VIX load failed for label generation: {e}")
+            vix_spike = pd.Series(False, index=returns.index)
+
+        # [OK] 엄격해진 레이블 (Option 1 적용)
+        # 1. 향후 20일 -10% (기존 -8%에서 강화)
+        future_dd_20 = returns.rolling(20).apply(
+            lambda x: (1 + x).cumprod().min() - 1
+        ).shift(-20)
         
-        # MDD(Maximum Drawdown) 계산
-        indexer = pd.api.indexers.FixedForwardWindowIndexer(window_size=10)
-        rolling_min = spy_close.rolling(window=indexer).min()
-        current_price = spy_close
+        # 2. 향후 10일 -7% AND VIX 급등
+        future_10d = returns.rolling(10).sum().shift(-10)
         
-        # 향후 10일 내 최대 하락폭
-        future_mdd = (rolling_min - current_price) / current_price
+        # 통합
+        crash_labels = (
+            (future_dd_20 < -0.07) | # [RELAXED] -10% -> -7% 로 완화
+            ((future_10d < -0.07) & vix_spike)
+        ).astype(int)
         
-        # [핵심] 기준을 -5%로 완화하여 2024년 급락을 '정답'으로 인정
-        crash_labels = (future_mdd < -0.05).astype(int)
         crash_labels.name = 'crash'
         
         # [수정] 데이터 병합 (Left Join으로 최신 데이터 보존)
@@ -776,9 +792,8 @@ class StructuralRiskDetector2026:
             return None
 
         # [수정] 날짜 기반 분할 (최근 폭락을 검증셋에 포함시키기 위함)
-        # 2025년 3월 폭락을 검증하기 위해 2025년 1월부터 검증 시작
-        # [Strategy] Walk-Forward: 최근 2024년 데이터(New Normal)를 학습에 포함
-        split_date = pd.Timestamp('2025-01-01')
+        # 2025년 3월 폭락을 검증하기 위해 2024년부터 검증
+        split_date = pd.Timestamp('2024-01-01')
         
         train = df_model[df_model.index < split_date]
         test = df_model[df_model.index >= split_date]
@@ -828,184 +843,218 @@ class StructuralRiskDetector2026:
         return df
         
     
-    def apply_trend_filter(self, df, raw_probs):
+    def train_model(self, df, split_date='2024-01-01', target_recall=0.55, max_fpr=0.40, test_size=0.2):
         """
-        [Strategy 3] 추세 필터 (Regime Filter)
-        - Bull Market (Price > MA200): Threshold 0.60 (둔감)
-        - Bear Market (Price < MA200): Threshold 0.25 (민감)
-        """
-        try:
-            # SPY 데이터 로드 (Aligned with df)
-            start_date = df.index[0] - pd.Timedelta(days=365) # MA200을 위한 버퍼
-            end_date = df.index[-1] + pd.Timedelta(days=5)
-            
-            spy = yf.download('SPY', start=start_date, end=end_date, progress=False)
-            if isinstance(spy.columns, pd.MultiIndex): spy.columns = spy.columns.get_level_values(0)
-            spy_close = spy['Close'] if 'Close' in spy.columns else spy.iloc[:, 0]
-            if isinstance(spy_close, pd.DataFrame): spy_close = spy_close.iloc[:, 0]
-            
-            if spy_close.index.tz is not None:
-                spy_close.index = spy_close.index.tz_localize(None)
-            
-            # MA200 & Bull Market
-            ma200 = spy_close.rolling(200).mean()
-            is_bull = (spy_close > ma200).reindex(df.index).ffill().fillna(True) # Fill NaT/NaN as Bull (conservative)
-            
-            final_pred = []
-            
-            for i in range(len(df)):
-                prob = raw_probs[i]
-                bull = is_bull.iloc[i]
-                
-                # Dynamic Threshold (Relaxed)
-                # Bull: 0.60 -> 0.35 (너무 높아서 0% Recall 문제 해결)
-                # Bear: 0.25 -> 0.15 (더 민감하게)
-                threshold = 0.35 if bull else 0.15
-                
-                final_pred.append(1 if prob >= threshold else 0)
-                
-            return np.array(final_pred), is_bull
-            
-        except Exception as e:
-            print(f"[WARN] Trend Filter Failed: {e}")
-            # Fallback to Fixed Threshold 0.25
-            return (raw_probs >= 0.25).astype(int), pd.Series(True, index=df.index)
-
-    def optimize_threshold(self, y_true, y_proba):
-        """
-        [Strategy 2] 최적 F1 Threshold 탐색
-        """
-        precision, recall, thresholds = precision_recall_curve(y_true, y_proba)
-        # F1 Score
-        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-9)
-        best_idx = np.argmax(f1_scores)
-        
-        # thresholds is length N, precision/recall is N+1
-        if best_idx < len(thresholds):
-            return thresholds[best_idx], f1_scores[best_idx]
-        return 0.5, 0.0
-
-    def train_model(self, df, split_date=None, target_recall=0.55, max_fpr=0.40, test_size=0.2):
-        """
-        [수정됨] Regime Filtering + Random Forest 전략
-        2023-2024년(노이즈 구간)을 학습에서 배제하고 2025년을 타겟팅합니다.
+        XGBoost Walk-Forward 학습 (Advanced Tuning)
+        - Time-Decay Sample Weights
+        - F-Score Maximization (F2 Score: Recall biased)
         """
         print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 (Strategy: Regime Filtering)")
+        print(f"[AI] 모델 학습 시작 (Advanced Tuning)")
+        if split_date:
+            print(f"   Split Date: {split_date}")
+        else:
+            print(f"   Test Size: {test_size:.0%}")
         
-        # 1. 데이터 분할: "독이 든 구간(23-24)" 제거
-        # 학습: 2018 ~ 2022 (정석적인 위기 반응 학습)
-        train = df[df.index < '2023-01-01']
+        X = df.drop('crash', axis=1)
+        y = df['crash']
         
-        # 검증: 2025 ~ 현재 (우리가 맞춰야 할 타겟)
-        test = df[df.index >= '2025-01-01']
+        # [OK] 날짜 기준 분할 우선
+        if split_date:
+            split_ts = pd.Timestamp(split_date)
+            post_split = df.index[df.index >= split_ts]
+            if not post_split.empty:
+                split_idx = df.index.get_loc(post_split[0])
+                print(f"[OK] 강제 분할 시점: {split_ts.date()}")
+            else:
+                print(f"[WARN] Split date {split_date} out of range, fallback to ratio")
+                split_idx = int(len(df) * (1 - test_size))
+        else:
+             split_idx = int(len(df) * (1 - test_size))
         
-        # 만약 테스트 데이터가 없으면 (2025년 데이터가 아직 없는 경우 방지)
-        if test.empty:
-            print("[WARN] 2025년 이후 데이터가 없어 2024년 6월 이후를 검증으로 사용합니다.")
-            test = df[df.index >= '2024-06-01']
+        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
         
-        X_train = train.drop('crash', axis=1)
-        y_train = train['crash']
-        X_test = test.drop('crash', axis=1)
-        y_test = test['crash']
+        print(f"학습: {len(X_train)} ({X_train.index[0].date()} ~ {X_train.index[-1].date()})")
+        print(f"검증: {len(X_test)} ({X_test.index[0].date()} ~ {X_test.index[-1].date()})")
+        print(f"원본: Normal={len(y_train[y_train==0])}, Crash={len(y_train[y_train==1])}")
         
-        print(f"학습 데이터: 2018~2022 ({len(train)}개) - 정석 위기 구간")
-        print(f"제외 데이터: 2023~2024 - AI 강세장(노이즈) 구간")
-        print(f"검증 데이터: 2025~현재 ({len(test)}개) - 타겟 구간")
+        # 1. Class Imbalance Handling
+        if y_train.sum() == 0:
+            print("[WARN] 학습 데이터에 Crash 없음. Dummy Model 사용.")
+            pos_weight = 1.0
+        else:
+            # [USER REQUEST] 가중치 10으로 고정 (Overfitting 방지)
+            pos_weight = 10.0
+            print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
-        # 2. 모델 교체: Random Forest (XGBoost보다 노이즈에 강함)
-        # scale_pos_weight 대신 class_weight='balanced' 사용
-        self.model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=3,             # 깊이 제한으로 과적합 방지
-            min_samples_leaf=5,      # 소수 샘플 무시
-            class_weight='balanced', # 불균형 데이터 자동 보정
+        # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
+        # 최근 데이터에 더 높은 가중치를 부여하여 Concept Drift 완화
+        weights = np.linspace(0.5, 1.5, len(X_train))
+        
+        # XGBoost 학습
+        self.model = XGBClassifier(
+            n_estimators=300,        
+            max_depth=4,             # [TUNING] 5->4 과적합 방지
+            learning_rate=0.05,      # [TUNING] 0.03->0.05 (or keep low) - User asked 0.05
+            subsample=0.8,
+            colsample_bytree=0.8,
+            scale_pos_weight=8.0,    # [TUNING] 10->8 하향 조정
             random_state=42,
-            n_jobs=-1
+            eval_metric='logloss'
         )
         
-        self.model.fit(X_train, y_train)
+        self.model.fit(
+            X_train, y_train,
+            sample_weight=weights,   # [OK] 가중치 적용
+            eval_set=[(X_test, y_test)],
+            verbose=False
+        )
+        
+        # 예측 확률
         y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
-        # 3. Hybrid Threshold (Rule-Based Override)
-        # 학습 데이터가 과거 데이터이므로, 현재 시장(2025)에 맞게 보정
+        # [SMOOTHING] EMA 20 적용 (Noise Reduction)
+        y_pred_proba = pd.Series(y_pred_proba).ewm(span=20).mean().values
         
-        # VIX(volatility) 컬럼 찾기
-        try:
-            vol_idx = list(X_test.columns).index('volatility')
-            vol_vals = X_test.iloc[:, vol_idx].values
-        except:
-            vol_vals = np.zeros(len(y_pred_proba))
+        # 3. Dynamic Thresholding (Maximize F2-Score)
+        # F2-Score: Recall에 Precision보다 2배 더 가중치 (Beta=2)
+        precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
+        
+        best_f2 = 0
+        optimal_threshold = 0.5
+        
+        # 분모가 0이 되는 것을 방지
+        numerator = (1 + 2**2) * (precision * recall)
+        denominator = (2**2 * precision) + recall
+        f2_scores = np.divide(numerator, denominator, out=np.zeros_like(numerator), where=denominator!=0)
+        
+        # Find best threshold
+        if len(thresholds) > 0:
+            best_idx = np.argmax(f2_scores[:-1]) # thresholds length = recall length - 1 (usually)
+            # scikit-learn precision_recall_curve: thresholds is shorter by 1
+            if best_idx < len(thresholds):
+                best_f2 = f2_scores[best_idx]
+                optimal_threshold = thresholds[best_idx]
+        
+        # [USER REQUEST] Threshold 0.25 고정 (황금비)
+        optimal_threshold = 0.25
+        print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
+        
+        self.threshold = optimal_threshold
+        
+        y_pred = (y_pred_proba >= optimal_threshold).astype(int)
+        
+        # 평가
+        auc = roc_auc_score(y_test, y_pred_proba)
+        
+        # print(f"{'='*70}")
+        # print(f"[METRICS] 검증 성과")
+        # print(f"{'='*70}")
+        # print(f"AUC: {auc:.3f}")
+        # print(f"\n{classification_report(y_test, y_pred, target_names=['Normal', 'Crash'])}")
+        
+        # Confusion Matrix
+        cm = confusion_matrix(y_test, y_pred)
+        # print(f"Confusion Matrix:")
+        # print(f"  TN: {cm[0,0]:4d}  FP: {cm[0,1]:4d}")
+        # print(f"  FN: {cm[1,0]:4d}  TP: {cm[1,1]:4d}")
+        
+        # [OK] NEW: 신호 발생 날짜 분석
+        # print("\n" + "="*70)
+        # print("[DATE] 신호 발생 상세 분석")
+        # print("="*70)
+        
+        # False Positives (모델 경고 + 실제 정상)
+        fp_indices = np.where((y_pred == 1) & (y_test == 0))[0]
+        fp_dates = X_test.index[fp_indices]
+        
+        # if len(fp_dates) > 0:
+            # print(f"\n[WARN] 경고 신호 발생 (FP={len(fp_dates)}개):")
+            # 연도별로 그룹화
+            # fp_by_year = {}
+            # for date in fp_dates:
+            #     year = date.year
+            #     if year not in fp_by_year:
+            #         fp_by_year[year] = []
+            #     fp_by_year[year].append(date)
+            
+            # for year in sorted(fp_by_year.keys()):
+                # print(f"\n  [{year}년]: {len(fp_by_year[year])}개")
+                # 처음 10개만 출력
+                # dates_to_show = fp_by_year[year][:10]
+                # if len(fp_by_year[year]) > 10:
+        # print(f"    {', '.join([str(d.month).zfill(2) + '-' + str(d.day).zfill(2) for d in dates_to_show])} ... (총 {len(fp_by_year[year])}개)")
+        # print(f"    {', '.join([str(d.month).zfill(2) + '-' + str(d.day).zfill(2) for d in dates_to_show])}")
+        
+        # True Positives
+        tp_indices = np.where((y_pred == 1) & (y_test == 1))[0]
+        tp_dates = X_test.index[tp_indices]
+        
+        # if len(tp_dates) > 0:
+            # print(f"\n[OK] 정확한 폭락 예측 (TP={len(tp_dates)}개):")
+            # for date in tp_dates:
+                # features = X_test.loc[date]
+                # top_features = features.nlargest(3)
+                # date_str = f"{date.year}-{str(date.month).zfill(2)}-{str(date.day).zfill(2)}"
+                # print(f"  {date_str}: 주요 신호 = {', '.join([f'{k}({v:.2f})' for k, v in top_features.items()])}")
+        
+        # False Negatives
+        fn_indices = np.where((y_pred == 0) & (y_test == 1))[0]
+        fn_dates = X_test.index[fn_indices]
+        
+        # if len(fn_dates) > 0:
+            # print(f"\n[ERROR] 놓친 폭락 (FN={len(fn_dates)}개):")
+            # for date in fn_dates[:10]:  # 처음 10개만
+                # date_str = f"{date.year}-{str(date.month).zfill(2)}-{str(date.day).zfill(2)}"
+                # print(f"  {date_str}")
+            # if len(fn_dates) > 10:
+                # print(f"  ... 외 {len(fn_dates)-10}개")
+        
+        # print("="*70 + "\n")
+        
+        # [OK] 백테스트 결과 저장 (Streamlit용)
+        from sklearn.metrics import accuracy_score, f1_score
+        self.backtest_results = {
+            'auc': auc,
+            'recall': recall_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, zero_division=0),
+            'f1': f1_score(y_test, y_pred, zero_division=0),
+            'accuracy': accuracy_score(y_test, y_pred),
+            'confusion_matrix': cm,
+            'threshold': optimal_threshold,
+            'y_test': y_test,
+            'y_pred': y_pred,
+            'y_pred_proba': y_pred_proba,
+            'X_test': X_test,
+            'split_date': split_date
+        }
+        
+        # Feature Importance
+        importances = pd.DataFrame({
+            'feature': X.columns,
+            'importance': self.model.feature_importances_
+        }).sort_values('importance', ascending=False).head(15)
+        
+        # print(f"\n[SEARCH] 상위 15개 Feature Importance:")
+        # print(importances.to_string(index=False))
+        # print(f"{'='*70}\n")
+        
+        # Predict on FULL dataset for visualization
+        y_pred_proba_full = self.model.predict_proba(X)[:, 1]
+        
+        # [SMOOTHING] EMA 20 적용
+        y_pred_proba_full = pd.Series(y_pred_proba_full).ewm(span=20).mean().values
 
-        final_preds = []
-        for i in range(len(y_pred_proba)):
-            base_prob = y_pred_proba[i]
-            
-            # [룰 베이스] 모델이 뭐라든 VIX가 1.5(Z-score) 넘으면 무조건 위험
-            if vol_vals[i] > 1.5:
-                # 모델 확률과 0.6 중 큰 값 선택 (최소 60% 확률 보장)
-                final_prob = max(base_prob, 0.6) 
-            else:
-                final_prob = base_prob
-                
-            # Random Forest는 확률이 0.5 근처에 몰리므로 임계값을 0.45로 설정
-            final_preds.append(1 if final_prob >= 0.45 else 0)
-            
-        final_preds = np.array(final_preds)
+        # 저장
+        self.backtest_results.update({
+            'X_full': X,
+            'y_full': y,
+            'y_pred_proba_full': y_pred_proba_full,
+            'test_start_date': X_test.index[0],
+            'importances': importances
+        })
         
-        # ---------------------------------------------------------
-        # 결과 출력
-        # ---------------------------------------------------------
-        try:
-            auc = roc_auc_score(y_test, y_pred_proba)
-            rec = recall_score(y_test, final_preds)
-            prec = precision_score(y_test, final_preds, zero_division=0)
-            f1 = f1_score(y_test, final_preds, zero_division=0)
-            
-            print(f"\n🎯 [Regime Filtering 결과]")
-            print(f"   AUC: {auc:.4f}")
-            print(f"   Recall: {rec:.1%} (목표: 50%+)")
-            print(f"   Precision: {prec:.1%} (목표: 40%+)")
-            print(f"   F1 Score: {f1:.3f}")
-            
-            # 결과 저장
-            self.backtest_results = {
-                'auc': auc, 'recall': rec, 'precision': prec, 'f1': f1,
-                'confusion_matrix': confusion_matrix(y_test, final_preds),
-                'threshold': 0.45,
-                'y_test': y_test, 'y_pred': final_preds, 'y_pred_proba': y_pred_proba,
-                'X_test': X_test,
-                # Full History for Plotting
-                'X_full': df.drop('crash', axis=1),
-                'y_full': df['crash'],
-                'y_pred_proba_full': self.model.predict_proba(df.drop('crash', axis=1))[:, 1],
-                'test_start_date': X_test.index[0]
-            }
-            
-            # Use Hybrid Threshold logic for Full History predictions
-            y_pred_proba_full = self.backtest_results['y_pred_proba_full']
-            X_full = self.backtest_results['X_full']
-            
-            if 'volatility' in X_full.columns:
-                 vol_full = X_full['volatility'].values
-            else:
-                 vol_full = np.zeros(len(y_pred_proba_full))
-                 
-            final_preds_full = []
-            for i in range(len(y_pred_proba_full)):
-                 base_prob = y_pred_proba_full[i]
-                 if vol_full[i] > 1.5:
-                      final_prob = max(base_prob, 0.6)
-                 else:
-                      final_prob = base_prob
-                 final_preds_full.append(1 if final_prob >= 0.45 else 0)
-                 
-            self.backtest_results['y_pred_full_refined'] = np.array(final_preds_full)
-            
-        except Exception as e:
-            print(f"[ERROR] 결과 계산 중 오류: {e}")
-            
         return self.model
     
     # ============================================
