@@ -776,8 +776,9 @@ class StructuralRiskDetector2026:
             return None
 
         # [수정] 날짜 기반 분할 (최근 폭락을 검증셋에 포함시키기 위함)
-        # 2025년 3월 폭락을 검증하기 위해 2024년부터 검증
-        split_date = pd.Timestamp('2024-01-01')
+        # 2025년 3월 폭락을 검증하기 위해 2025년 1월부터 검증 시작
+        # [Strategy] Walk-Forward: 최근 2024년 데이터(New Normal)를 학습에 포함
+        split_date = pd.Timestamp('2025-01-01')
         
         train = df_model[df_model.index < split_date]
         test = df_model[df_model.index >= split_date]
