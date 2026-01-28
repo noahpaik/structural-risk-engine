@@ -816,18 +816,26 @@ class StructuralRiskDetector2026:
         bond_panic = (bond_signal > 0.8).astype(int)
         liq_drain = (net_liq_signal < -0.8).astype(int)
         # [NEW] 환율(FX) 트리거도 민감하게 (-0.8)
-        fx_panic = (fx_carry_signal < -0.8).astype(int) 
+        fx_panic = (fx_carry_signal < -0.8).astype(int)
+        # [NEW] 변동성 발작 추가 (사장님 의견 반영)
+        # VIX가 평소보다 튀면(Z-score > 1.0) 무조건 압력 채움
+        vol_panic = (vol_signal > 1.0).astype(int)
         
         # 인덱스 정렬 
         bond_panic = bond_panic.reindex(hmm_signal.index).fillna(0)
         liq_drain = liq_drain.reindex(hmm_signal.index).fillna(0)
         fx_panic = fx_panic.reindex(hmm_signal.index).fillna(0)
+        vol_panic = vol_panic.reindex(hmm_signal.index).fillna(0)
         
         for i in range(len(hmm_signal)):
             
             # [NEW] 외부 충격 가속도 계산 (HMM 상태와 무관하게 계산)
             # 환율(FX)에 가장 높은 가중치 5 부여 (2025년 타겟팅)
-            external_shock = (bond_panic.iloc[i] * 3) + (fx_panic.iloc[i] * 5) + (liq_drain.iloc[i] * 2)
+            # [수정] 가속도 공식: 변동성(Vol)이 튀면 압력을 3배로 빨리 채움
+            external_shock = (bond_panic.iloc[i] * 3) + \
+                             (fx_panic.iloc[i] * 5) + \
+                             (liq_drain.iloc[i] * 2) + \
+                             (vol_panic.iloc[i] * 3)
             
             if is_stress.iloc[i]:
                 # [CASE 1] 이미 터짐 (Stress) -> 리셋
@@ -839,8 +847,8 @@ class StructuralRiskDetector2026:
                 current_strain += (1 + external_shock)
                 
             else:
-                # [CASE 3] 평온/횡보 상태 (Normal) - 여기가 문제였음!
-                # "HMM은 평온해 보여도, 밖에서(FX) 난리가 났으면 압력을 채워라!"
+                # [CASE 3] 평온/횡보 상태 (Normal)
+                # "HMM은 평온해 보여도, 밖에서(FX/Vol) 난리가 났으면 압력을 채워라!"
                 
                 if external_shock > 0:
                     # 겉은 평온하지만 속은 썩어들어가는 중 -> 압력 증가
@@ -877,12 +885,20 @@ class StructuralRiskDetector2026:
             # [AMPLIFIER] Context Interaction Features (Pressure Cooker Logic)
             # [GATE] "확실한 충격(Impact) 아니면 곱하지 마라"
             # Z-score 1.0 미만의 잡음은 0으로 처리 (Noise Gate)
-            'context_bond_stress': (bond_signal * accumulated_strain * (bond_signal > 1.0).astype(int)).astype(float),
-            'context_liquidity_drain': ((net_liq_signal * -1) * accumulated_strain * (net_liq_signal < -1.0).astype(int)).astype(float),
-            'context_momentum_crash': ((momentum_signal * -1) * accumulated_strain).astype(float),
             
-            # [NEW] 환율(FX) 트리거 추가 (Carry 청산 쇼크)
-            'context_fx_shock': ((fx_carry_signal * -1) * accumulated_strain * fx_panic).astype(float)             
+            # [수정] 0의 함정 탈출 (Hybrid Trigger)
+            # Strain이 0이어도, Signal 자체가 강력하면(Gate 통과) 경보 울림: Signal * (1 + Strain)
+            
+            'context_bond_stress': (bond_signal * (1 + accumulated_strain) * (bond_signal > 1.0).astype(int)).astype(float),
+            'context_liquidity_drain': ((net_liq_signal * -1) * (1 + accumulated_strain) * (net_liq_signal < -1.0).astype(int)).astype(float),
+            'context_momentum_crash': ((momentum_signal * -1) * (1 + accumulated_strain)).astype(float),
+            
+            # [NEW] 환율(FX) 트리거 (Carry 청산 쇼크)
+            'context_fx_shock': ((fx_carry_signal * -1) * (1 + accumulated_strain) * fx_panic).astype(float),
+            
+            # [NEW] 변동성 (Volatility) 트리거 추가
+            # VIX가 튀면 Strain이 없어도 경보 울림
+            'context_vol_shock': (vol_signal * (1 + accumulated_strain) * vol_panic).astype(float)             
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
         }).sort_index().ffill().dropna()
