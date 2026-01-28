@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
-from datetime import datetime
 import yfinance as yf
 import numpy as np
 from plotly.subplots import make_subplots
@@ -46,7 +45,7 @@ def load_detector_v23():
         
     return StructuralRiskDetector2026(fred_api_key=api_key)
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=14400)
 def load_data_v23(_detector):
     """데이터 로드 (모델 학습 제외)"""
     with st.spinner('데이터 로딩 중...'):
