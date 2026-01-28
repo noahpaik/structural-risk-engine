@@ -962,6 +962,11 @@ class StructuralRiskDetector2026:
         # 1. 학습/검증용 데이터 (라벨이 반드시 있어야 함 -> NaN 제거)
         df_model = df_full.dropna()
         
+        # [Safe Guard] 데이터가 비었는지 확인
+        if df_full.empty:
+            print("[CRITICAL] 생성된 데이터프레임이 비어 있습니다. (모든 데이터가 dropna 되었거나 소스 데이터 부족)")
+            return None
+
         # 2. 실시간 모니터링용 데이터 (최근 20일 포함, 라벨 NaN이어도 됨)
         # 2026-01-26 기준 최신 데이터
         current_data = df_full.iloc[[-1]] 
