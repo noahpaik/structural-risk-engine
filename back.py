@@ -851,7 +851,7 @@ class StructuralRiskDetector2026:
             # [NEW Features]
             'hmm_overheated': is_overheated.astype(int), 
             'hmm_strain': accumulated_strain.astype(float),            
-            'hmm_strain_accel': accumulated_strain.diff().fillna(0).astype(float), 
+            'hmm_strain_vel': accumulated_strain.diff().fillna(0).astype(float), 
             'strain_x_drain': strain_x_drain.astype(float)             
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
