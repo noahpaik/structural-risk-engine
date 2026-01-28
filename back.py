@@ -932,21 +932,21 @@ class StructuralRiskDetector2026:
             pos_weight = 1.0
         else:
             # [USER REQUEST] 가중치 10으로 고정 (Overfitting 방지)
-            pos_weight = 10.0
+            pos_weight = 15.0
             print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
         # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
         # 최근 데이터에 더 높은 가중치를 부여하여 Concept Drift 완화
-        weights = np.linspace(0.5, 1.0, len(X_train))
+        weights = np.linspace(0.5, 0.75, len(X_train))
         
         # XGBoost 학습
         self.model = XGBClassifier(
             n_estimators=300,        
             max_depth=5,             # [TUNING] 5->4 과적합 방지
-            learning_rate=0.05,      # [TUNING] 0.03->0.05 (or keep low) - User asked 0.05
+            learning_rate=0.04,      # [TUNING] 0.03->0.05 (or keep low) - User asked 0.05
             subsample=0.8,
             colsample_bytree=0.8,
-            scale_pos_weight=2.0,    # [TUNING] 10->8 하향 조정
+            scale_pos_weight=1.0,    # [TUNING] 10->8 하향 조정
             random_state=42,
             eval_metric='logloss'
         )
