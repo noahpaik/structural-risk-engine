@@ -937,16 +937,16 @@ class StructuralRiskDetector2026:
 
         # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
         # 최근 데이터에 더 높은 가중치를 부여하여 Concept Drift 완화
-        weights = np.linspace(0.5, 1.5, len(X_train))
+        weights = np.linspace(0.5, 1.0, len(X_train))
         
         # XGBoost 학습
         self.model = XGBClassifier(
             n_estimators=300,        
-            max_depth=4,             # [TUNING] 5->4 과적합 방지
+            max_depth=5,             # [TUNING] 5->4 과적합 방지
             learning_rate=0.05,      # [TUNING] 0.03->0.05 (or keep low) - User asked 0.05
             subsample=0.8,
             colsample_bytree=0.8,
-            scale_pos_weight=5.0,    # [TUNING] 10->8 하향 조정
+            scale_pos_weight=2.0,    # [TUNING] 10->8 하향 조정
             random_state=42,
             eval_metric='logloss'
         )
@@ -984,7 +984,7 @@ class StructuralRiskDetector2026:
         #        best_f2 = f2_scores[best_idx]
         #        optimal_threshold = thresholds[best_idx]
         
-        # Threshold 0.6 고정
+        # Threshold 0.5 고정
         optimal_threshold = 0.5
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
@@ -1391,7 +1391,7 @@ if __name__ == "__main__":
     # 데이터 준비 (2002 ~ 2026)
     df = detector.prepare_training_data(
         start_date='2002-01-01',
-        end_date='2026-01-26'
+        end_date='None'
     )
     
     if df is not None and not df.empty:
