@@ -682,17 +682,20 @@ class StructuralRiskDetector2026:
             path_features[f'{col}_accel'] = accel
         
         # 3. Reference: Count-based Synchronized Stress
-        # "2개 이상의 신호가 65분위수 초과 시"
-        thresholds = signals_df.rolling(252).quantile(0.65)
-        stress_counts = (signals_df > thresholds).sum(axis=1)
+        # [수정 핵심] 2019년 Repo 발작 무시하기
+        # 1. 기준 강화: 상위 35%(0.65) -> 상위 15%(0.85) (진짜 위험할 때만 켜짐)
+        # 2. 기간 확대: 과거 1년(252) -> 과거 2년(504) (2017년 저변동성 장세 착시 방지)
+        thresholds = signals_df.rolling(504).quantile(0.85) # [TUNING] 252->504, 0.65->0.85
         
-        # Trigger condition: Count >= 2
-        all_stressed = stress_counts >= 2
+        # 4. 개수 조건 강화: 지표 2개 -> 3개 이상 동시 폭발 시
+        stress_counts = (signals_df > thresholds).sum(axis=1)
+        all_stressed = stress_counts >= 3 # [TUNING] 2 -> 3
         
         stress_groups = (all_stressed != all_stressed.shift()).cumsum()
-        path_features['sync_stress_duration'] = (
-            all_stressed.groupby(stress_groups).cumcount() * all_stressed
-        )
+        
+        # [추가] Duration에 Log를 씌워서 200일씩 쌓이는 거 방지 (De-powering)
+        raw_duration = all_stressed.groupby(stress_groups).cumcount() * all_stressed
+        path_features['sync_stress_duration'] = np.log1p(raw_duration)
         
         print(f"[OK] 경로 변수: {len(path_features.columns)}개")
         return path_features
@@ -790,8 +793,13 @@ class StructuralRiskDetector2026:
             'liquidity': liquidity_signal,    # [OK] Microstructure-based
             'fx_carry': fx_carry_signal,      # [OK] Global shock
             'net_liquidity': net_liq_signal,  # [OK] Daily Fed tracking
-            'hmm_regime': hmm_signal          # [OK] Market Regime
+            # 'hmm_regime': hmm_signal        # [DEL] 쪼개서 넣기 위해 제거
         }).sort_index().ffill().dropna()
+
+        # [핵심] HMM을 One-Hot Encoding으로 분리하여 추가 (영향력 분산)
+        # 0(Normal)은 베이스라인이므로 굳이 안 넣어도 됨
+        signals['hmm_overheated'] = (hmm_signal == 1).astype(int) # 과열 여부
+        signals['hmm_stress'] = (hmm_signal == 2).astype(int)     # 스트레스 여부
         
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
