@@ -806,12 +806,17 @@ class StructuralRiskDetector2026:
         strain_list = []
         current_strain = 0
         
-        # 채권 스트레스나 유동성 감소가 동반되면 가속도 붙임
-        # (z-score 기준이므로 1.0 이상이면 위험 신호)
-        bond_panic = (bond_signal > 1.0).astype(int)
-        liq_drain = (net_liq_signal < 0).astype(int)
-        # [NEW] 환율 발작 감지 (FX Carry 급락 = 자본 유출/회피 심리 폭발)
-        fx_panic = (fx_carry_signal < -1.0).astype(int)
+        # [수정] HMM Strain 계산 로직 대수술 (Always-on Sensor)
+        
+        strain_list = []
+        current_strain = 0
+        
+        # 1. 외부 충격 감지 (Trigger)
+        # Threshold를 살짝 낮춰서(-0.8) 민감하게 반응하도록 함
+        bond_panic = (bond_signal > 0.8).astype(int)
+        liq_drain = (net_liq_signal < -0.8).astype(int)
+        # [NEW] 환율(FX) 트리거도 민감하게 (-0.8)
+        fx_panic = (fx_carry_signal < -0.8).astype(int) 
         
         # 인덱스 정렬 
         bond_panic = bond_panic.reindex(hmm_signal.index).fillna(0)
@@ -819,19 +824,31 @@ class StructuralRiskDetector2026:
         fx_panic = fx_panic.reindex(hmm_signal.index).fillna(0)
         
         for i in range(len(hmm_signal)):
-            if is_overheated.iloc[i]:
-                # [핵심] 그냥 과열이면 +1, 채권도 같이 미치면 +5 (급속 가열)
-                # [수정] 환율(FX) 발작도 채권만큼 위험하게 반영 (+4)
-                acceleration = 1 + (bond_panic.iloc[i] * 4) + (fx_panic.iloc[i] * 4) + (liq_drain.iloc[i] * 2)
-                current_strain += acceleration
-                
-            elif is_stress.iloc[i]:
-                # 위기 발생(폭발) -> 압력 해소 (리셋)
+            
+            # [NEW] 외부 충격 가속도 계산 (HMM 상태와 무관하게 계산)
+            # 환율(FX)에 가장 높은 가중치 5 부여 (2025년 타겟팅)
+            external_shock = (bond_panic.iloc[i] * 3) + (fx_panic.iloc[i] * 5) + (liq_drain.iloc[i] * 2)
+            
+            if is_stress.iloc[i]:
+                # [CASE 1] 이미 터짐 (Stress) -> 리셋
                 current_strain = 0
-            else:
-                # 평온 -> 서서히 식음
-                current_strain = max(0, current_strain - 1) # 식는 속도도 0.5->1로 가속
                 
+            elif is_overheated.iloc[i]:
+                # [CASE 2] 과열 상태 (Overheated)
+                # 기본적으로 +1씩 차오르고, 외부 충격 있으면 더 빨리 차오름
+                current_strain += (1 + external_shock)
+                
+            else:
+                # [CASE 3] 평온/횡보 상태 (Normal) - 여기가 문제였음!
+                # "HMM은 평온해 보여도, 밖에서(FX) 난리가 났으면 압력을 채워라!"
+                
+                if external_shock > 0:
+                    # 겉은 평온하지만 속은 썩어들어가는 중 -> 압력 증가
+                    current_strain += external_shock 
+                else:
+                    # 진짜 아무 일도 없음 -> 쿨링
+                    current_strain = max(0, current_strain - 1)
+            
             strain_list.append(current_strain)
             
         # Series로 변환
@@ -1190,7 +1207,8 @@ class StructuralRiskDetector2026:
         #        optimal_threshold = thresholds[best_idx]
         
         # [수정] 오경보를 줄이기 위해 다시 상향
-        optimal_threshold = 0.45
+        # [TUNING] 0.45 -> 0.42 (신호가 강해졌으므로 살짝 낮춰도 됨)
+        optimal_threshold = 0.42
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
