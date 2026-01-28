@@ -816,7 +816,7 @@ class StructuralRiskDetector2026:
             
         # 모델 학습에는 df_model(전체)을 리턴하거나, train/test를 튜플로 리턴
         # 여기서는 기존 호환성을 위해 df_model 리턴 (내부에서 TimeSeriesSplit 사용 권장)
-        return df_model
+        return df_full
         
         print(f"\n{'='*70}")
         print(f"[INFO] 데이터 준비 완료")
@@ -851,13 +851,18 @@ class StructuralRiskDetector2026:
         """
         print(f"\n{'='*70}")
         print(f"[AI] 모델 학습 시작 (Advanced Tuning)")
+        
+        # [추가] 학습 시에는 라벨(crash)이 있는 데이터만 사용해야 함 (NaN 제거)
+        df_for_training = df.dropna(subset=['crash'])
+        
         if split_date:
             print(f"   Split Date: {split_date}")
         else:
             print(f"   Test Size: {test_size:.0%}")
         
-        X = df.drop('crash', axis=1)
-        y = df['crash']
+        # 기존 코드에서 df 대신 df_for_training 사용
+        X = df_for_training.drop('crash', axis=1)
+        y = df_for_training['crash']
         
         # [OK] 날짜 기준 분할 우선
         if split_date:
