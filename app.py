@@ -29,7 +29,7 @@ st.sidebar.markdown("---")
 # 모델 초기화 (캐시)
 # 모델 초기화 (캐시)
 @st.cache_resource
-def load_detector_v41():
+def load_detector_v42():
     """모델 로드"""
     try:
         # 1. Streamlit Secrets (Cloud 배포용)
@@ -46,7 +46,7 @@ def load_detector_v41():
     return StructuralRiskDetector2026(fred_api_key=api_key)
 
 @st.cache_data(ttl=3600)
-def load_data_v41(_detector):
+def load_data_v42(_detector):
     """데이터 로드 (모델 학습 제외)"""
     with st.spinner('데이터 로딩 중...'):
         # [AUTO] 매일 날짜 자동 갱신
@@ -55,7 +55,7 @@ def load_data_v41(_detector):
     return df
 
 @st.cache_resource
-def run_training_v41(_detector, df):
+def run_training_v42(_detector, df):
     """모델 학습 (별도 캐시)"""
     if df is None or df.empty:
         return _detector
@@ -69,16 +69,16 @@ def run_training_v41(_detector, df):
     return _detector
 
 # 모델 및 데이터 로드
-detector = load_detector_v41()
+detector = load_detector_v42()
 if detector is None:
     st.stop()
-df = load_data_v41(detector)
+df = load_data_v42(detector)
 
 if df is None:
     st.error("데이터 로드 실패: 데이터를 가져올 수 없습니다. (소스 데이터 오류 또는 API 문제)")
     st.stop()
 
-detector = run_training_v41(detector, df)
+detector = run_training_v42(detector, df)
 
 # [DEBUG] 데이터 로드 확인
 # st.success(f"데이터 로드 완료 (Shape: {df.shape})")
@@ -377,11 +377,19 @@ elif page == "🎯 피처 신호":
     st.markdown("---")
     
     # 피처 선택
-    available_features = ['volatility', 'bond_stress', 'eco_surprise', 'momentum', 'liquidity', 'fx_carry', 'net_liquidity']
+    # 피처 선택
+    available_features = [
+        # 1. Base Features
+        'volatility', 'bond_stress', 'eco_surprise', 'momentum', 'liquidity', 'fx_carry', 'net_liquidity',
+        # 2. HMM Features (Pressure Cooker)
+        'hmm_overheated', 'hmm_strain', 'hmm_strain_vel', 'strain_x_drain',
+        # 3. Context Amplifiers
+        'context_bond_stress', 'context_liquidity_drain', 'context_momentum_crash'
+    ]
     selected_features = st.multiselect(
         "분석할 피처 선택",
         available_features,
-        default=['momentum', 'net_liquidity', 'fx_carry']
+        default=['hmm_strain', 'context_bond_stress', 'context_liquidity_drain']
     )
     
     if selected_features:
