@@ -860,7 +860,25 @@ class StructuralRiskDetector2026:
         # 기계적 하락폭이 부족하더라도, 구조적 위기였던 구간을 '정답(1)'으로 강제 설정
         # ==============================================================================
         
-        # 1. 2024년 7~8월: 엔캐리 트레이드 청산 (Black Monday 전조)
+        # [NEW] 1. 2019년 9월 ~ 12월: 레포 발작 (Repo Crisis)
+        # 당시 주가는 횡보했지만, 단기 자금 시장은 붕괴 직전이었음 -> 구조적 위험 '1'
+        # 연준이 'Not QE'로 유동성을 공급하기 전까지를 위험 구간으로 설정
+        if '2019-09-15' in crash_labels.index and '2019-12-15' in crash_labels.index:
+             try:
+                 crash_labels.loc['2019-09-15':'2019-12-15'] = 1
+                 print("[USER] 2019년 레포 발작 구간을 'Actual Crash'로 강제 지정했습니다.")
+             except: pass
+
+        # [NEW] 2. 2023년 3월: 실리콘밸리은행(SVB) 파산 & 뱅크런
+        # 채권 금리 급등과 역마진으로 인한 시스템 위기 -> 구조적 위험 '1'
+        # BTFP(은행 지원 프로그램) 가동 전후까지 위험 구간
+        if '2023-03-08' in crash_labels.index and '2023-03-31' in crash_labels.index:
+             try:
+                 crash_labels.loc['2023-03-08':'2023-03-31'] = 1
+                 print("[USER] 2023년 SVB 사태 구간을 'Actual Crash'로 강제 지정했습니다.")
+             except: pass
+
+        # 3. 2024년 7~8월: 엔캐리 트레이드 청산 (Black Monday 전조)
         # 7월 중순부터 8월 초까지를 위험 구간으로 정의
         if '2024-07-15' in crash_labels.index and '2024-08-05' in crash_labels.index:
              try:
