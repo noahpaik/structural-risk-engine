@@ -52,7 +52,7 @@ def load_data_v23(_detector):
     with st.spinner('데이터 로딩 중...'):
         # [AUTO] 매일 날짜 자동 갱신
         today = datetime.now().strftime('%Y-%m-%d')
-        df = _detector.prepare_training_data(start_date='2018-01-01', end_date=today)
+        df = _detector.prepare_training_data(start_date='2002-01-01', end_date=today)
     return df
 
 @st.cache_resource
@@ -81,7 +81,7 @@ st.sidebar.info(f"""
 **모델 정보**
 - 레이어: 7개
 - 피처: 22개
-- 학습 기간: 2018-2022
+- 학습 기간: 2002-2022
 - 검증 기간: 2023-2026
 """)
 
