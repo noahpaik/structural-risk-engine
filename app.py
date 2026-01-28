@@ -29,7 +29,7 @@ st.sidebar.markdown("---")
 # 모델 초기화 (캐시)
 # 모델 초기화 (캐시)
 @st.cache_resource
-def load_detector_v47():
+def load_detector_v48():
     """모델 로드"""
     try:
         # 1. Streamlit Secrets (Cloud 배포용)
@@ -46,7 +46,7 @@ def load_detector_v47():
     return StructuralRiskDetector2026(fred_api_key=api_key)
 
 @st.cache_data(ttl=3600)
-def load_data_v47(_detector):
+def load_data_v48(_detector):
     """데이터 로드 (모델 학습 제외)"""
     with st.spinner('데이터 로딩 중...'):
         # [AUTO] 매일 날짜 자동 갱신
@@ -55,7 +55,7 @@ def load_data_v47(_detector):
     return df
 
 @st.cache_resource
-def run_training_v47(_detector, df):
+def run_training_v48(_detector, df):
     """모델 학습 (별도 캐시)"""
     if df is None or df.empty:
         return _detector
@@ -69,16 +69,16 @@ def run_training_v47(_detector, df):
     return _detector
 
 # 모델 및 데이터 로드
-detector = load_detector_v47()
+detector = load_detector_v48()
 if detector is None:
     st.stop()
-df = load_data_v47(detector)
+df = load_data_v48(detector)
 
 if df is None:
     st.error("데이터 로드 실패: 데이터를 가져올 수 없습니다. (소스 데이터 오류 또는 API 문제)")
     st.stop()
 
-detector = run_training_v47(detector, df)
+detector = run_training_v48(detector, df)
 
 # [DEBUG] 데이터 로드 확인
 # st.success(f"데이터 로드 완료 (Shape: {df.shape})")
@@ -174,9 +174,14 @@ if page == "🏠 Home - 현재 위험":
     st.markdown("---")
     
     # 주요 신호 강도
-    st.subheader("📡 현재 신호 강도")
+    st.subheader("📡 현재 신호 강도 (Top 7)")
     current_features = df.drop('crash', axis=1).iloc[-1]
-    base_features = ['volatility', 'bond_stress', 'eco_surprise', 'momentum', 'liquidity', 'fx_carry', 'net_liquidity']
+    
+    # [수정] 모니터링 핵심 지표 Top 7
+    base_features = [
+        'volatility', 'bond_stress', 'eco_surprise', 
+        'fx_carry', 'private_credit', 'net_liquidity', 'hmm_strain'
+    ]
     
     feature_values = {feat: current_features[feat] for feat in base_features if feat in current_features}
     
@@ -273,8 +278,22 @@ elif page == "📈 Backtest 결과":
         fig_full.add_trace(go.Scatter(x=X_full.index, y=y_pred_proba_full, mode='lines', name='Prob', line=dict(color='darkred', width=1)), row=2, col=1)
         fig_full.add_hline(y=thr, line_dash="dash", line_color="red", row=2, col=1, annotation_text=f"Threshold {thr:.3f}")
         
-        # 3. Signals
-        for col, color in zip(['volatility', 'bond_stress', 'eco_surprise'], ['#1f77b4', '#ff7f0e', '#2ca02c']):
+        # 3. Signals (Top 7 Layout)
+        # [수정] 차트에 표시할 핵심 지표 리스트 업데이트 (Top 7)
+        columns_to_plot = [
+            'volatility',        # 공포 지수 (VIX)
+            'bond_stress',       # 채권 발작 (MOVE)
+            'eco_surprise',      # 실물 경기 충격
+            'fx_carry',          # [NEW] 환율/자본 유출 (2025 핵심)
+            'private_credit',    # [NEW] 사모신용 붕괴 (TCPC)
+            'net_liquidity',     # [NEW] 연준 유동성
+            'hmm_strain'         # [NEW] 과열 압력 게이지
+        ]
+        
+        # 색상 팔레트 (7개)
+        colors_7 = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#17becf']
+        
+        for col, color in zip(columns_to_plot, colors_7):
             if col in X_full.columns:
                 fig_full.add_trace(go.Scatter(x=X_full.index, y=X_full[col], mode='lines', name=col, line=dict(width=1, color=color)), row=3, col=1)
         fig_full.add_hline(y=0, line_dash="dash", line_color="gray", row=3, col=1)
