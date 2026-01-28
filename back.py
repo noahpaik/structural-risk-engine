@@ -937,8 +937,8 @@ class StructuralRiskDetector2026:
         #        best_f2 = f2_scores[best_idx]
         #        optimal_threshold = thresholds[best_idx]
         
-        # Threshold 0.7 고정
-        optimal_threshold = 0.7
+        # Threshold 0.6 고정
+        optimal_threshold = 0.6
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
