@@ -1020,7 +1020,7 @@ class StructuralRiskDetector2026:
         y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
         # [SMOOTHING] EMA 20 적용 (Noise Reduction)
-        y_pred_proba = pd.Series(y_pred_proba).ewm(span=20).mean().values
+        y_pred_proba = pd.Series(y_pred_proba).ewm(span=5).mean().values
         
         # 3. Dynamic Thresholding (Maximize F2-Score)
         # F2-Score: Recall에 Precision보다 2배 더 가중치 (Beta=2)
@@ -1266,7 +1266,7 @@ class StructuralRiskDetector2026:
     
     def get_current_assessment(self, df):
         """
-        현재 시점 위험 평가 (2026-01-26)
+        현재 시점 위험 평가 (2026-01-28)
         """
         if self.model is None:
             print("[WARN] 먼저 모델 학습 필요")
