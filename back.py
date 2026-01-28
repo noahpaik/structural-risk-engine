@@ -1,3 +1,5 @@
+import os
+import joblib
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -593,64 +595,78 @@ class StructuralRiskDetector2026:
     # ============================================
     def get_market_regime_hmm(self, spy_df):
         """
-        HMM을 이용한 3단계 시장 국면 탐지
-        - 0: Normal (평온/횡보)
-        - 1: Overheated (과열/급등 - 리스크 누적)
-        - 2: Stress (공포/폭락 - 리스크 실현)
+        HMM을 이용한 3단계 시장 국면 탐지 (캐싱 기능 추가)
+        - 0: Normal
+        - 1: Overheated
+        - 2: Stress
         """
-        print("[INFO] HMM 3단계 국면(과열/노멀/스트레스) 분석 중...")
+        # [NEW] 캐시 파일 경로 설정
+        cache_file = "hmm_model_cache.pkl"
+        
+        # 데이터의 마지막 날짜(또는 길이)를 확인해서, 데이터가 바뀌었으면 다시 학습
+        if isinstance(spy_df, pd.DataFrame):
+            last_date = spy_df.index[-1].strftime('%Y-%m-%d')
+        else:
+            # Fallback for Series
+            last_date = spy_df.index[-1].strftime('%Y-%m-%d')
+
+        # [1] 캐시 확인: 파일이 있고, 데이터가 최신이면 불러오기
+        if os.path.exists(cache_file):
+            try:
+                cached_data = joblib.load(cache_file)
+                # 저장된 데이터의 날짜와 현재 데이터 날짜가 같으면 로딩
+                if cached_data.get('last_date') == last_date:
+                    print("[INFO] HMM 모델을 캐시에서 불러옵니다. (학습 건너뜀 🚀)")
+                    
+                    saved_signal = cached_data['signal']
+                    # 인덱스 길이를 더 안전하게 맞춤
+                    return saved_signal.reindex(spy_df.index).ffill().dropna()
+                    
+            except Exception as e:
+                print(f"[WARN] 캐시 로딩 실패, 다시 학습합니다: {e}")
+
+        # [2] 캐시가 없거나 날짜가 다르면 -> HMM 학습 시작 (기존 로직)
+        print("[INFO] HMM 3단계 국면(과열/노멀/스트레스) 분석 및 학습 중... (시간 소요됨 🐢)")
         
         try:
             # 1. 데이터 준비
-            # 수익률(Return)과 변동성(Volatility)을 동시에 사용해야 '과열'을 구분 가능
-            data = spy_df['Close'].pct_change().dropna()
+            if isinstance(spy_df, pd.DataFrame) and 'Close' in spy_df.columns:
+                data = spy_df['Close'].pct_change().dropna()
+            else:
+                data = spy_df.pct_change().dropna()
+                
             vol = data.rolling(20).std().dropna()
-            ret = data.rolling(20).mean().dropna() # 추세 확인용
+            ret = data.rolling(20).mean().dropna()
             
-            # 인덱스 교집합 정렬
             common_idx = vol.index.intersection(ret.index)
             X = np.column_stack([ret.loc[common_idx].values, vol.loc[common_idx].values])
             
-            # 2. HMM 모델 학습 (3개 국면)
-            # *주의: hmmlearn 라이브러리 설치 필요 (pip install hmmlearn)
             from hmmlearn.hmm import GaussianHMM
-            
             model = GaussianHMM(n_components=3, covariance_type="full", n_iter=1000, random_state=42)
             model.fit(X)
             hidden_states = model.predict(X)
             
-            # 3. 국면 정의 (Labeling Logic)
-            # model.means_ : [State 0, State 1, State 2] 각각의 [평균수익률, 평균변동성]
+            # (라벨링 로직: Stress/Overheated/Normal 찾기)
             means = model.means_
-            
-            # (1) Stress 찾기: 변동성(인덱스 1)이 가장 높은 상태
-            stress_idx = np.argmax(means[:, 1])
-            
-            # (2) 남은 2개 중 Overheated 찾기: 수익률(인덱스 0)이 가장 높은 상태
+            stress_idx = np.argmax(means[:, 1]) # 변동성 최대
             remaining_indices = [i for i in range(3) if i != stress_idx]
-            overheated_idx = remaining_indices[np.argmax(means[remaining_indices, 0])]
-            
-            # (3) 나머지는 Normal
+            overheated_idx = remaining_indices[np.argmax(means[remaining_indices, 0])] # 나머지 중 수익률 최대
             normal_idx = [i for i in remaining_indices if i != overheated_idx][0]
             
-            # 4. 라벨 매핑 (0: Normal, 1: Overheated, 2: Stress)
-            # 상태값(0,1,2)을 우리가 정의한 의미대로 변환
             mapping = {normal_idx: 0, overheated_idx: 1, stress_idx: 2}
             mapped_states = np.array([mapping[s] for s in hidden_states])
             
-            # Series 변환
             regime_signal = pd.Series(mapped_states, index=common_idx, name='hmm_regime')
             
-            # [결과 확인]
-            print(f"   - Stress State (2): Vol={means[stress_idx][1]*100:.2f}%, Ret={means[stress_idx][0]*100:.2f}%")
-            print(f"   - Overheated State (1): Vol={means[overheated_idx][1]*100:.2f}%, Ret={means[overheated_idx][0]*100:.2f}%")
-            print(f"   - Normal State (0): Vol={means[normal_idx][1]*100:.2f}%, Ret={means[normal_idx][0]*100:.2f}%")
+            # [3] 결과 저장 (캐싱)
+            print(f"[INFO] HMM 학습 완료. 결과를 '{cache_file}'에 저장합니다.")
+            joblib.dump({'last_date': last_date, 'signal': regime_signal}, cache_file)
             
             return regime_signal
             
         except ImportError:
-            print("[ERROR] 'hmmlearn' 라이브러리가 없습니다. (pip install hmmlearn)")
-            return pd.Series()
+             print("[ERROR] 'hmmlearn' 라이브러리가 없습니다. (pip install hmmlearn)")
+             return pd.Series()
         except Exception as e:
             print(f"[ERROR] HMM 분석 실패: {e}")
             return pd.Series()
