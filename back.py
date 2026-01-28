@@ -593,50 +593,64 @@ class StructuralRiskDetector2026:
     # ============================================
     def get_market_regime_hmm(self, spy_df):
         """
-        HMM을 사용하여 숨겨진 시장 국면(Hidden Regime) 탐지
-        - State 0: Low Volatility (Bull)
-        - State 1: High Volatility (Bear/Crash)
+        HMM을 이용한 3단계 시장 국면 탐지
+        - 0: Normal (평온/횡보)
+        - 1: Overheated (과열/급등 - 리스크 누적)
+        - 2: Stress (공포/폭락 - 리스크 실현)
         """
-        print("[INFO] HMM 국면 분석 중...")
+        print("[INFO] HMM 3단계 국면(과열/노멀/스트레스) 분석 중...")
         
         try:
-            # 데이터 준비 (수익률 & 변동성)
-            returns = spy_df['Close'].pct_change().dropna()
-            volatility = returns.rolling(20).std().dropna()
+            # 1. 데이터 준비
+            # 수익률(Return)과 변동성(Volatility)을 동시에 사용해야 '과열'을 구분 가능
+            data = spy_df['Close'].pct_change().dropna()
+            vol = data.rolling(20).std().dropna()
+            ret = data.rolling(20).mean().dropna() # 추세 확인용
             
-            # 인덱스 정렬
-            common_index = returns.index.intersection(volatility.index)
-            returns = returns.loc[common_index]
-            volatility = volatility.loc[common_index]
+            # 인덱스 교집합 정렬
+            common_idx = vol.index.intersection(ret.index)
+            X = np.column_stack([ret.loc[common_idx].values, vol.loc[common_idx].values])
             
-            # 모델 입력 형태 (2차원 배열)
-            # 수익률과 변동성을 동시에 보고 판단하게 함
-            X = np.column_stack([returns.values, volatility.values])
+            # 2. HMM 모델 학습 (3개 국면)
+            # *주의: hmmlearn 라이브러리 설치 필요 (pip install hmmlearn)
+            from hmmlearn.hmm import GaussianHMM
             
-            # HMM 모델 학습 (2개 국면 가정)
-            model = GaussianHMM(n_components=2, covariance_type="diag", n_iter=1000, random_state=42)
+            model = GaussianHMM(n_components=3, covariance_type="full", n_iter=1000, random_state=42)
             model.fit(X)
-            
-            # 국면 예측 (0 또는 1)
             hidden_states = model.predict(X)
             
-            # [중요] 라벨 정렬 (Label Sorting)
-            # HMM은 0과 1을 랜덤하게 배정하므로, 변동성이 높은 상태를 무조건 '1'로 고정해야 함
+            # 3. 국면 정의 (Labeling Logic)
+            # model.means_ : [State 0, State 1, State 2] 각각의 [평균수익률, 평균변동성]
+            means = model.means_
             
-            # 각 상태별 평균 변동성 계산
-            state_0_vol = volatility[hidden_states == 0].mean()
-            state_1_vol = volatility[hidden_states == 1].mean()
+            # (1) Stress 찾기: 변동성(인덱스 1)이 가장 높은 상태
+            stress_idx = np.argmax(means[:, 1])
             
-            # 만약 0번 상태가 변동성이 더 크다면, 0과 1을 뒤집음
-            if state_0_vol > state_1_vol:
-                hidden_states = 1 - hidden_states  # 0->1, 1->0 반전
+            # (2) 남은 2개 중 Overheated 찾기: 수익률(인덱스 0)이 가장 높은 상태
+            remaining_indices = [i for i in range(3) if i != stress_idx]
+            overheated_idx = remaining_indices[np.argmax(means[remaining_indices, 0])]
             
-            # Series로 변환
-            regime_signal = pd.Series(hidden_states, index=returns.index, name='hmm_regime')
+            # (3) 나머지는 Normal
+            normal_idx = [i for i in remaining_indices if i != overheated_idx][0]
             
-            print(f"[OK] HMM 국면 데이터: {len(regime_signal)} 포인트")
+            # 4. 라벨 매핑 (0: Normal, 1: Overheated, 2: Stress)
+            # 상태값(0,1,2)을 우리가 정의한 의미대로 변환
+            mapping = {normal_idx: 0, overheated_idx: 1, stress_idx: 2}
+            mapped_states = np.array([mapping[s] for s in hidden_states])
+            
+            # Series 변환
+            regime_signal = pd.Series(mapped_states, index=common_idx, name='hmm_regime')
+            
+            # [결과 확인]
+            print(f"   - Stress State (2): Vol={means[stress_idx][1]*100:.2f}%, Ret={means[stress_idx][0]*100:.2f}%")
+            print(f"   - Overheated State (1): Vol={means[overheated_idx][1]*100:.2f}%, Ret={means[overheated_idx][0]*100:.2f}%")
+            print(f"   - Normal State (0): Vol={means[normal_idx][1]*100:.2f}%, Ret={means[normal_idx][0]*100:.2f}%")
+            
             return regime_signal
             
+        except ImportError:
+            print("[ERROR] 'hmmlearn' 라이브러리가 없습니다. (pip install hmmlearn)")
+            return pd.Series()
         except Exception as e:
             print(f"[ERROR] HMM 분석 실패: {e}")
             return pd.Series()
