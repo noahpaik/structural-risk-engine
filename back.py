@@ -833,6 +833,29 @@ class StructuralRiskDetector2026:
             ((future_10d < -0.05) & vix_spike)
         ).astype(int)
         
+        # ==============================================================================
+        # [추가] 사용자 정의 폭락 구간 강제 지정 (Ground Truth Correction)
+        # 기계적 하락폭이 부족하더라도, 구조적 위기였던 구간을 '정답(1)'으로 강제 설정
+        # ==============================================================================
+        
+        # 1. 2024년 7~8월: 엔캐리 트레이드 청산 (Black Monday 전조)
+        # 7월 중순부터 8월 초까지를 위험 구간으로 정의
+        if '2024-07-15' in crash_labels.index and '2024-08-05' in crash_labels.index:
+             try:
+                 crash_labels.loc['2024-07-15':'2024-08-05'] = 1
+                 print("[USER] 2024년 7~8월 엔캐리 청산 구간을 'Actual Crash'로 강제 지정했습니다.")
+             except: pass
+
+        # 2. 2025년 3~4월: 관세 전쟁 (Tariff War)
+        # 2월 말부터 4월 초까지를 위험 구간으로 정의
+        if '2025-02-20' in crash_labels.index and '2025-04-10' in crash_labels.index:
+             try:
+                 crash_labels.loc['2025-02-20':'2025-04-10'] = 1
+                 print("[USER] 2025년 3~4월 관세 전쟁 구간을 'Actual Crash'로 강제 지정했습니다.")
+             except: pass
+        
+        # ==============================================================================
+
         crash_labels.name = 'crash'
         
         # [수정] 데이터 병합 (Left Join으로 최신 데이터 보존)
