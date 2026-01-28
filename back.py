@@ -919,6 +919,9 @@ class StructuralRiskDetector2026:
             'liquidity': liquidity_signal,
             'fx_carry': fx_carry_signal,
             'net_liquidity': net_liq_signal,
+            # [NEW] 사모신용(Private Credit) 신호 추가
+            # 값이 높을수록 위험
+            'private_credit': private_credit_signal,
             
             # [NEW Features]
             'hmm_overheated': is_overheated.astype(int), 
