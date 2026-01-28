@@ -685,7 +685,13 @@ class StructuralRiskDetector2026:
         # [수정 핵심] 2019년 Repo 발작 무시하기
         # 1. 기준 강화: 상위 35%(0.65) -> 상위 15%(0.85) (진짜 위험할 때만 켜짐)
         # 2. 기간 확대: 과거 1년(252) -> 과거 2년(504) (2017년 저변동성 장세 착시 방지)
-        thresholds = signals_df.rolling(504).quantile(0.85) # [TUNING] 252->504, 0.65->0.85
+        # [수정] 2023-24년 노이즈 제거를 위해 Rolling Quantile 도입 (Regime Adaptive)
+        # "최근 1년(252일) 동안 본 것 중에 상위 10%냐?"
+        
+        rolling_thresholds = signals_df.rolling(252).quantile(0.90) # 기준을 90%로 더 높임
+    
+        # 현재 값이 최근 1년 기준선을 넘었는가?
+        stress_counts = (signals_df > rolling_thresholds).sum(axis=1)
         
         # 4. 개수 조건 강화: 지표 2개 -> 3개 이상 동시 폭발 시
         stress_counts = (signals_df > thresholds).sum(axis=1)
@@ -797,35 +803,40 @@ class StructuralRiskDetector2026:
         is_normal = (hmm_signal == 0)     # 평온
         
         # 2. '누적 압력(Accumulated Strain)' 지표 생성
-        # - 과열(Overheated) 상태가 지속될수록 1씩 증가 (리스크 누적)
-        # - 스트레스(Stress) 상태가 되면 0으로 초기화 (리스크 해소)
-        # - 노멀(Normal) 상태면 현상 유지하거나 서서히 감소
+        # [수정] HMM Strain 계산 로직 고도화 (가속도 반영)
         
-        strain_counter = []
+        strain_list = []
         current_strain = 0
+        
+        # 채권 스트레스나 유동성 감소가 동반되면 가속도 붙임
+        # (z-score 기준이므로 1.0 이상이면 위험 신호)
+        bond_panic = (bond_stress_signal > 1.0).astype(int)
+        liq_drain = (net_liq_signal < 0).astype(int)
+        
+        # 인덱스 정렬 
+        bond_panic = bond_panic.reindex(hmm_signal.index).fillna(0)
+        liq_drain = liq_drain.reindex(hmm_signal.index).fillna(0)
         
         for i in range(len(hmm_signal)):
             if is_overheated.iloc[i]:
-                # 과열 상태: 압력 증가 (빨리 터질 것 같음)
-                current_strain += 1
+                # [핵심] 그냥 과열이면 +1, 채권도 같이 미치면 +5 (급속 가열)
+                # 이렇게 해야 폭락 직전에 신호가 수직 상승해서 '선행성'을 가짐
+                acceleration = 1 + (bond_panic.iloc[i] * 4) + (liq_drain.iloc[i] * 2)
+                current_strain += acceleration
+                
             elif is_stress.iloc[i]:
-                # 스트레스 상태: 폭발함 -> 압력 0으로 리셋 (사장님 논리: 위기 끝)
+                # 위기 발생(폭발) -> 압력 해소 (리셋)
                 current_strain = 0
             else:
-                # 노멀 상태: 압력이 서서히 빠짐 (Cooling down)
-                current_strain = max(0, current_strain - 0.5)
+                # 평온 -> 서서히 식음
+                current_strain = max(0, current_strain - 1) # 식는 속도도 0.5->1로 가속
                 
-            strain_counter.append(current_strain)
+            strain_list.append(current_strain)
             
         # Series로 변환
-        accumulated_strain = pd.Series(strain_counter, index=hmm_signal.index, name='hmm_strain')
+        accumulated_strain = pd.Series(strain_list, index=hmm_signal.index, name='hmm_strain')
         
-        # [NEW] 압력 폭발 지표 (Trigger)
-        # 압력이 찼는데(Strain > 0) + 실질 유동성이 감소 추세(Net Liquidity < 0)일 때 가중치 부여
-        
-        # Net Liquidity가 감소중인지 확인 (음수일수록 위험)
-        liq_drain = (net_liq_signal < 0).astype(int)
-        
+        # [NEW] 압력 폭발 지표 (Trigger) - 위에서 정의한 변수 사용
         # 압력이 찬 상태에서 돈이 빠지는가?
         strain_x_drain = accumulated_strain * liq_drain
         strain_x_drain.name = 'strain_x_drain'
@@ -842,6 +853,7 @@ class StructuralRiskDetector2026:
             # [NEW Features]
             'hmm_overheated': is_overheated.astype(int), # 지금 뜨거운가? (즉시 경고)
             'hmm_strain': accumulated_strain,            # 얼마나 오래 뜨거웠나? (시한폭탄 타이머)
+            'hmm_strain_accel': accumulated_strain.diff(), # [NEW] 압력 변화량 (타이밍)
             'strain_x_drain': strain_x_drain             # [NEW] 확인 사살 (압력 x 유동성 감소)
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
@@ -1100,9 +1112,9 @@ class StructuralRiskDetector2026:
             print("[WARN] 학습 데이터에 Crash 없음. Dummy Model 사용.")
             pos_weight = 1.0
         else:
-            # [USER REQUEST] 정밀도(Precision) 향상을 위해 가중치 하향 (5.0)
-            # "폭락 놓치면 안 되지만, 그렇다고 아무때나 소리지르지는 마라."
-            pos_weight = 5.0
+            # 1. 가중치 복구 (Recall 50% 사수용)
+            # 폭락을 놓치는 건 15배 더 나쁘다. (20은 과하고 5는 약했음)
+            pos_weight = 15.0
             print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
         # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
@@ -1111,10 +1123,10 @@ class StructuralRiskDetector2026:
         
         # XGBoost 학습
         self.model = XGBClassifier(
-            n_estimators=500,        # [증가] 300 -> 500 (더 신중하게 많이 고민해라)
-            max_depth=4,             # [유지] 깊게 파지 마라 (오버피팅 방지)
-            learning_rate=0.02,      # [감소] 0.04 -> 0.02 (아주 천천히 확신을 가져라)
-            subsample=0.7,           # [감소] 0.8 -> 0.7 (데이터 더 가려서 봐라)
+            n_estimators=500,
+            learning_rate=0.05,      # 0.02 -> 0.05 (조금 더 빨리 배워라)
+            max_depth=5,             # 4 -> 5 (조금 더 복잡한 패턴 허용)
+            subsample=0.7,
             colsample_bytree=0.7,
             scale_pos_weight=pos_weight,
             
@@ -1159,9 +1171,9 @@ class StructuralRiskDetector2026:
         #        best_f2 = f2_scores[best_idx]
         #        optimal_threshold = thresholds[best_idx]
         
-        # [수정] Threshold 대폭 상향 (정밀 타격)
-        # "확률이 65% 이상일 때만 폭락으로 간주한다."
-        optimal_threshold = 0.65
+        # [수정] Threshold 중용 (황금비율)
+        # 0.45: "확률 반반 싸움보다는 조금 더 확신이 들 때(45%) 쏴라"
+        optimal_threshold = 0.45 
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
