@@ -29,7 +29,7 @@ st.sidebar.markdown("---")
 # 모델 초기화 (캐시)
 # 모델 초기화 (캐시)
 @st.cache_resource
-def load_detector_v37():
+def load_detector_v38():
     """모델 로드"""
     try:
         # 1. Streamlit Secrets (Cloud 배포용)
@@ -46,7 +46,7 @@ def load_detector_v37():
     return StructuralRiskDetector2026(fred_api_key=api_key)
 
 @st.cache_data(ttl=3600)
-def load_data_v37(_detector):
+def load_data_v38(_detector):
     """데이터 로드 (모델 학습 제외)"""
     with st.spinner('데이터 로딩 중...'):
         # [AUTO] 매일 날짜 자동 갱신
@@ -55,21 +55,22 @@ def load_data_v37(_detector):
     return df
 
 @st.cache_resource
-def run_training_v37(_detector, df):
+def run_training_v38(_detector, df):
     """모델 학습 (별도 캐시)"""
     with st.spinner('모델 학습 및 백테스트 중...'):
         # [AUTO] 검증 구간 자동 설정 (최근 1년)
         # split_date = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
         # 하지만 안정성을 위해 고정된 날짜 사용 권장 (2023-01-01)
+        # [TUNING] Golden Ratio Tuning 시에는 더 긴 검증 구간이 필요할 수 있음
         _detector.train_model(df, split_date='2023-01-01')
     return _detector
 
 # 모델 및 데이터 로드
-detector = load_detector_v37()
+detector = load_detector_v38()
 if detector is None:
     st.stop()
-df = load_data_v37(detector)
-detector = run_training_v37(detector, df)
+df = load_data_v38(detector)
+detector = run_training_v38(detector, df)
 
 # [DEBUG] 데이터 로드 확인
 # st.success(f"데이터 로드 완료 (Shape: {df.shape})")

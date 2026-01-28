@@ -849,10 +849,10 @@ class StructuralRiskDetector2026:
             'net_liquidity': net_liq_signal,
             
             # [NEW Features]
-            'hmm_overheated': is_overheated.astype(int), # 지금 뜨거운가? (즉시 경고)
-            'hmm_strain': accumulated_strain,            # 얼마나 오래 뜨거웠나? (시한폭탄 타이머)
-            'hmm_strain_accel': accumulated_strain.diff(), # [NEW] 압력 변화량 (타이밍)
-            'strain_x_drain': strain_x_drain             # [NEW] 확인 사살 (압력 x 유동성 감소)
+            'hmm_overheated': is_overheated.astype(int), 
+            'hmm_strain': accumulated_strain.astype(float),            
+            'hmm_strain_accel': accumulated_strain.diff().fillna(0).astype(float), 
+            'strain_x_drain': strain_x_drain.astype(float)             
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
         }).sort_index().ffill().dropna()
