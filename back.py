@@ -789,6 +789,31 @@ class StructuralRiskDetector2026:
         # [복구] HMM 국면 탐지
         hmm_signal = self.get_market_regime_hmm(spy_df)
 
+        # ==============================================================================
+        # [NEW] 사모신용(Private Credit) 스트레스 - TCPC 중심
+        # 논리: "공모 하이일드(HYG)는 버티는데, 사모 대출(TCPC) 가격이 무너지면 구조적 위기다."
+        # ==============================================================================
+        print("   [INFO] 사모신용(TCPC) 데이터 로드 중...")
+        aux_tickers = ['HYG', 'TCPC']
+        aux_data = yf.download(aux_tickers, start=start_date, progress=False)['Close']
+        
+        # 1. TCPC 괴리율 (Credit Divergence)
+        # HYG(시장 유동성 있음) 대비 TCPC(비유동성 자산)의 상대 강도
+        tcp_ratio = aux_data['TCPC'] / aux_data['HYG']
+        
+        # 2. Z-score 변환 (평균 회귀 분석)
+        tcp_stress_raw = (tcp_ratio - tcp_ratio.rolling(252).mean()) / tcp_ratio.rolling(252).std()
+        
+        # 3. 신호 반전 (-1 곱하기, 수치가 높을수록 Panic)
+        private_credit_signal = tcp_stress_raw * -1
+        
+        # 인덱스 매칭
+        if private_credit_signal.index.tz is not None:
+             private_credit_signal.index = private_credit_signal.index.tz_localize(None)
+        
+        # 4. 트리거 설정 (Z-score 1.0 이상이면 발작)
+        tcpc_panic = (private_credit_signal > 1.0).astype(int)
+
         # [NEW] 사장님의 "압력 밥솥" 로직 구현
         # 원리: Overheated면 압력이 쌓이고(Risk 증가), Stress면 압력이 해소된다(Risk 감소/종료)
         
@@ -826,16 +851,19 @@ class StructuralRiskDetector2026:
         liq_drain = liq_drain.reindex(hmm_signal.index).fillna(0)
         fx_panic = fx_panic.reindex(hmm_signal.index).fillna(0)
         vol_panic = vol_panic.reindex(hmm_signal.index).fillna(0)
+        tcpc_panic = tcpc_panic.reindex(hmm_signal.index).fillna(0)
         
         for i in range(len(hmm_signal)):
             
             # [NEW] 외부 충격 가속도 계산 (HMM 상태와 무관하게 계산)
             # 환율(FX)에 가장 높은 가중치 5 부여 (2025년 타겟팅)
             # [수정] 가속도 공식: 변동성(Vol)이 튀면 압력을 3배로 빨리 채움
+            # [수정] 사모신용(TCPC)이 흔들리면 뇌관 건드린 것임 -> 가중치 4
             external_shock = (bond_panic.iloc[i] * 3) + \
                              (fx_panic.iloc[i] * 5) + \
-                             (liq_drain.iloc[i] * 2) + \
-                             (vol_panic.iloc[i] * 3)
+                             (tcpc_panic.iloc[i] * 4) + \
+                             (vol_panic.iloc[i] * 3) + \
+                             (liq_drain.iloc[i] * 2)
             
             if is_stress.iloc[i]:
                 # [CASE 1] 이미 터짐 (Stress) -> 리셋
@@ -898,7 +926,11 @@ class StructuralRiskDetector2026:
             
             # [NEW] 변동성 (Volatility) 트리거 추가
             # VIX가 튀면 Strain이 없어도 경보 울림
-            'context_vol_shock': (vol_signal * (1 + accumulated_strain) * vol_panic).astype(float)             
+            'context_vol_shock': (vol_signal * (1 + accumulated_strain) * vol_panic).astype(float),
+            
+            # [NEW] 사모신용 충격 트리거 (Hybrid Trigger)
+            # 압력(Strain)이 0이어도, TCPC가 급락하면 그 자체로 '신용 사건'임
+            'context_private_credit': (private_credit_signal * (1 + accumulated_strain) * tcpc_panic).astype(float)             
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
         }).sort_index().ffill().dropna()
