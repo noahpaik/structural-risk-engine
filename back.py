@@ -820,6 +820,16 @@ class StructuralRiskDetector2026:
         # Series로 변환
         accumulated_strain = pd.Series(strain_counter, index=hmm_signal.index, name='hmm_strain')
         
+        # [NEW] 압력 폭발 지표 (Trigger)
+        # 압력이 찼는데(Strain > 0) + 실질 유동성이 감소 추세(Net Liquidity < 0)일 때 가중치 부여
+        
+        # Net Liquidity가 감소중인지 확인 (음수일수록 위험)
+        liq_drain = (net_liq_signal < 0).astype(int)
+        
+        # 압력이 찬 상태에서 돈이 빠지는가?
+        strain_x_drain = accumulated_strain * liq_drain
+        strain_x_drain.name = 'strain_x_drain'
+        
         signals = pd.DataFrame({
             'volatility': vol_signal,
             'bond_stress': bond_signal,
@@ -831,7 +841,8 @@ class StructuralRiskDetector2026:
             
             # [NEW Features]
             'hmm_overheated': is_overheated.astype(int), # 지금 뜨거운가? (즉시 경고)
-            'hmm_strain': accumulated_strain             # 얼마나 오래 뜨거웠나? (시한폭탄 타이머)
+            'hmm_strain': accumulated_strain,            # 얼마나 오래 뜨거웠나? (시한폭탄 타이머)
+            'strain_x_drain': strain_x_drain             # [NEW] 확인 사살 (압력 x 유동성 감소)
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
         }).sort_index().ffill().dropna()
@@ -1089,8 +1100,9 @@ class StructuralRiskDetector2026:
             print("[WARN] 학습 데이터에 Crash 없음. Dummy Model 사용.")
             pos_weight = 1.0
         else:
-            # [USER REQUEST] 가중치 20으로 상향 (틀리면 죽는다)
-            pos_weight = 20.0
+            # [USER REQUEST] 정밀도(Precision) 향상을 위해 가중치 하향 (5.0)
+            # "폭락 놓치면 안 되지만, 그렇다고 아무때나 소리지르지는 마라."
+            pos_weight = 5.0
             print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
         # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
@@ -1099,12 +1111,17 @@ class StructuralRiskDetector2026:
         
         # XGBoost 학습
         self.model = XGBClassifier(
-            n_estimators=300,        
-            max_depth=5,             # [TUNING] 5->4 과적합 방지
-            learning_rate=0.04,      # [TUNING] 0.03->0.05 (or keep low) - User asked 0.05
-            subsample=0.8,
-            colsample_bytree=0.8,
-            scale_pos_weight=pos_weight,    # [FIX] 하드코딩(1.0) 제거하고 변수 적용
+            n_estimators=500,        # [증가] 300 -> 500 (더 신중하게 많이 고민해라)
+            max_depth=4,             # [유지] 깊게 파지 마라 (오버피팅 방지)
+            learning_rate=0.02,      # [감소] 0.04 -> 0.02 (아주 천천히 확신을 가져라)
+            subsample=0.7,           # [감소] 0.8 -> 0.7 (데이터 더 가려서 봐라)
+            colsample_bytree=0.7,
+            scale_pos_weight=pos_weight,
+            
+            # [NEW] 정밀도(Precision)를 올리는 핵심 파라미터 추가!
+            gamma=0.2,               # "확실한 이득이 없으면 가지를 치지 마라" (노이즈 제거)
+            min_child_weight=3,      # "샘플이 너무 적은 케이스는 무시해라" (특이값 무시)
+            
             random_state=42,
             eval_metric='logloss'
         )
@@ -1142,8 +1159,9 @@ class StructuralRiskDetector2026:
         #        best_f2 = f2_scores[best_idx]
         #        optimal_threshold = thresholds[best_idx]
         
-        # Threshold 0.25 하향 (합격 기준 완화)
-        optimal_threshold = 0.4
+        # [수정] Threshold 대폭 상향 (정밀 타격)
+        # "확률이 65% 이상일 때만 폭락으로 간주한다."
+        optimal_threshold = 0.65
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
