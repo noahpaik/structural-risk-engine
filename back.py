@@ -861,21 +861,23 @@ class StructuralRiskDetector2026:
         # ==============================================================================
         
         # [NEW] 1. 2019년 9월 ~ 12월: 레포 발작 (Repo Crisis)
-        # 당시 주가는 횡보했지만, 단기 자금 시장은 붕괴 직전이었음 -> 구조적 위험 '1'
-        # 연준이 'Not QE'로 유동성을 공급하기 전까지를 위험 구간으로 설정
-        if '2019-09-15' in crash_labels.index and '2019-12-15' in crash_labels.index:
+        # 시작: 9월 17일 레포 금리 급등
+        # 종료: 10월 11일 연준이 단기국채 매입(Not QE) 발표 -> 유동성 공급 확정 시점
+        # (기존 12월 15일 -> 10월 15일로 단축)
+        if '2019-09-15' in crash_labels.index and '2019-10-15' in crash_labels.index:
              try:
-                 crash_labels.loc['2019-09-15':'2019-12-15'] = 1
-                 print("[USER] 2019년 레포 발작 구간을 'Actual Crash'로 강제 지정했습니다.")
+                 crash_labels.loc['2019-09-15':'2019-10-15'] = 1
+                 print("[USER] 2019년 레포 발작 구간(9/15~10/15)을 'Actual Crash'로 지정했습니다.")
              except: pass
 
         # [NEW] 2. 2023년 3월: 실리콘밸리은행(SVB) 파산 & 뱅크런
-        # 채권 금리 급등과 역마진으로 인한 시스템 위기 -> 구조적 위험 '1'
-        # BTFP(은행 지원 프로그램) 가동 전후까지 위험 구간
-        if '2023-03-08' in crash_labels.index and '2023-03-31' in crash_labels.index:
+        # 시작: 3월 8일 SVB 손실 발표 및 뱅크런 시작
+        # 종료: 3월 13일~15일 BTFP(은행기간대출프로그램) 가동 및 연준 대차대조표 급등 시점
+        # (기존 3월 31일 -> 3월 17일로 단축)
+        if '2023-03-08' in crash_labels.index and '2023-03-17' in crash_labels.index:
              try:
-                 crash_labels.loc['2023-03-08':'2023-03-31'] = 1
-                 print("[USER] 2023년 SVB 사태 구간을 'Actual Crash'로 강제 지정했습니다.")
+                 crash_labels.loc['2023-03-08':'2023-03-17'] = 1
+                 print("[USER] 2023년 SVB 사태 구간(3/08~3/17)을 'Actual Crash'로 지정했습니다.")
              except: pass
 
         # 3. 2024년 7~8월: 엔캐리 트레이드 청산 (Black Monday 전조)
