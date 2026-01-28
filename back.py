@@ -785,21 +785,56 @@ class StructuralRiskDetector2026:
         # [복구] HMM 국면 탐지
         hmm_signal = self.get_market_regime_hmm(spy_df)
 
+        # [NEW] 사장님의 "압력 밥솥" 로직 구현
+        # 원리: Overheated면 압력이 쌓이고(Risk 증가), Stress면 압력이 해소된다(Risk 감소/종료)
+        
+        # 1. 상태별 마스크 생성
+        # hmm_signal 인덱스를 spy_df 인덱스와 맞추기 위해 reindex 필요할 수 있음 (보통은 맞춰져 있음)
+        hmm_signal = hmm_signal.reindex(vol_signal.index).ffill().dropna()
+        
+        is_overheated = (hmm_signal == 1) # 과열 (경고등 켜야 함)
+        is_stress = (hmm_signal == 2)     # 스트레스 (위기 해소 중)
+        is_normal = (hmm_signal == 0)     # 평온
+        
+        # 2. '누적 압력(Accumulated Strain)' 지표 생성
+        # - 과열(Overheated) 상태가 지속될수록 1씩 증가 (리스크 누적)
+        # - 스트레스(Stress) 상태가 되면 0으로 초기화 (리스크 해소)
+        # - 노멀(Normal) 상태면 현상 유지하거나 서서히 감소
+        
+        strain_counter = []
+        current_strain = 0
+        
+        for i in range(len(hmm_signal)):
+            if is_overheated.iloc[i]:
+                # 과열 상태: 압력 증가 (빨리 터질 것 같음)
+                current_strain += 1
+            elif is_stress.iloc[i]:
+                # 스트레스 상태: 폭발함 -> 압력 0으로 리셋 (사장님 논리: 위기 끝)
+                current_strain = 0
+            else:
+                # 노멀 상태: 압력이 서서히 빠짐 (Cooling down)
+                current_strain = max(0, current_strain - 0.5)
+                
+            strain_counter.append(current_strain)
+            
+        # Series로 변환
+        accumulated_strain = pd.Series(strain_counter, index=hmm_signal.index, name='hmm_strain')
+        
         signals = pd.DataFrame({
             'volatility': vol_signal,
             'bond_stress': bond_signal,
             'eco_surprise': eco_signal,
-            'momentum': momentum_signal,      # [OK] Price-based
-            'liquidity': liquidity_signal,    # [OK] Microstructure-based
-            'fx_carry': fx_carry_signal,      # [OK] Global shock
-            'net_liquidity': net_liq_signal,  # [OK] Daily Fed tracking
-            # 'hmm_regime': hmm_signal        # [DEL] 쪼개서 넣기 위해 제거
+            'momentum': momentum_signal,
+            'liquidity': liquidity_signal,
+            'fx_carry': fx_carry_signal,
+            'net_liquidity': net_liq_signal,
+            
+            # [NEW Features]
+            'hmm_overheated': is_overheated.astype(int), # 지금 뜨거운가? (즉시 경고)
+            'hmm_strain': accumulated_strain             # 얼마나 오래 뜨거웠나? (시한폭탄 타이머)
+            
+            # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
         }).sort_index().ffill().dropna()
-
-        # [핵심] HMM을 One-Hot Encoding으로 분리하여 추가 (영향력 분산)
-        # 0(Normal)은 베이스라인이므로 굳이 안 넣어도 됨
-        signals['hmm_overheated'] = (hmm_signal == 1).astype(int) # 과열 여부
-        signals['hmm_stress'] = (hmm_signal == 2).astype(int)     # 스트레스 여부
         
         path_features = self.add_path_features(signals)
         features = pd.concat([signals, path_features], axis=1).dropna()
