@@ -12,6 +12,7 @@ import seaborn as sns
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
+from hmmlearn.hmm import GaussianHMM
 
 # ============================================
 # 전체 시스템 통합 (2026년 1월 기준)
@@ -588,6 +589,59 @@ class StructuralRiskDetector2026:
             return pd.Series()
     
     # ============================================
+    # LAYER 4 (복구): HMM 기반 국면 탐지
+    # ============================================
+    def get_market_regime_hmm(self, spy_df):
+        """
+        HMM을 사용하여 숨겨진 시장 국면(Hidden Regime) 탐지
+        - State 0: Low Volatility (Bull)
+        - State 1: High Volatility (Bear/Crash)
+        """
+        print("[INFO] HMM 국면 분석 중...")
+        
+        try:
+            # 데이터 준비 (수익률 & 변동성)
+            returns = spy_df['Close'].pct_change().dropna()
+            volatility = returns.rolling(20).std().dropna()
+            
+            # 인덱스 정렬
+            common_index = returns.index.intersection(volatility.index)
+            returns = returns.loc[common_index]
+            volatility = volatility.loc[common_index]
+            
+            # 모델 입력 형태 (2차원 배열)
+            # 수익률과 변동성을 동시에 보고 판단하게 함
+            X = np.column_stack([returns.values, volatility.values])
+            
+            # HMM 모델 학습 (2개 국면 가정)
+            model = GaussianHMM(n_components=2, covariance_type="diag", n_iter=1000, random_state=42)
+            model.fit(X)
+            
+            # 국면 예측 (0 또는 1)
+            hidden_states = model.predict(X)
+            
+            # [중요] 라벨 정렬 (Label Sorting)
+            # HMM은 0과 1을 랜덤하게 배정하므로, 변동성이 높은 상태를 무조건 '1'로 고정해야 함
+            
+            # 각 상태별 평균 변동성 계산
+            state_0_vol = volatility[hidden_states == 0].mean()
+            state_1_vol = volatility[hidden_states == 1].mean()
+            
+            # 만약 0번 상태가 변동성이 더 크다면, 0과 1을 뒤집음
+            if state_0_vol > state_1_vol:
+                hidden_states = 1 - hidden_states  # 0->1, 1->0 반전
+            
+            # Series로 변환
+            regime_signal = pd.Series(hidden_states, index=returns.index, name='hmm_regime')
+            
+            print(f"[OK] HMM 국면 데이터: {len(regime_signal)} 포인트")
+            return regime_signal
+            
+        except Exception as e:
+            print(f"[ERROR] HMM 분석 실패: {e}")
+            return pd.Series()
+    
+    # ============================================
     # LAYER 4: Path-Dependent Features
     # ============================================
     
@@ -711,6 +765,9 @@ class StructuralRiskDetector2026:
         except Exception as e:
             print(f"[WARN] Net Liquidity timezone conversion error: {e}")
 
+        # [복구] HMM 국면 탐지
+        hmm_signal = self.get_market_regime_hmm(spy_df)
+
         signals = pd.DataFrame({
             'volatility': vol_signal,
             'bond_stress': bond_signal,
@@ -718,7 +775,8 @@ class StructuralRiskDetector2026:
             'momentum': momentum_signal,      # [OK] Price-based
             'liquidity': liquidity_signal,    # [OK] Microstructure-based
             'fx_carry': fx_carry_signal,      # [OK] Global shock
-            'net_liquidity': net_liq_signal   # [OK] Daily Fed tracking
+            'net_liquidity': net_liq_signal,  # [OK] Daily Fed tracking
+            'hmm_regime': hmm_signal          # [OK] Market Regime
         }).sort_index().ffill().dropna()
         
         path_features = self.add_path_features(signals)
