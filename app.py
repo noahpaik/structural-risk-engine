@@ -296,67 +296,76 @@ elif page == "📈 Backtest 결과":
             z=[[cm[1,1], cm[0,1]], [cm[1,0], cm[0,0]]], # TP, FP / FN, TN 순서? 보통은 TN FP / FN TP
             x=['Crash (Pred)', 'Normal (Pred)'],
             y=['Crash (Actual)', 'Normal (Actual)'],
-            colorscale='Blues',
-            text=[[f"TP: {cm[1,1]}", f"FP: {cm[0,1]}"], [f"FN: {cm[1,0]}", f"TN: {cm[0,0]}"]],
-            texttemplate="%{text}",
-            textfont={"size": 14}
-        ))
-        # Note: scikit-learn cm is [[TN, FP], [FN, TP]]
-        # Let's visualize normally: x=Predicted, y=Actual
-        # x=0(Normal), 1(Crash)
-        
-        fig_cm = go.Figure(data=go.Heatmap(
-            z=cm, 
-            x=['Predicted Normal', 'Predicted Crash'],
-            y=['Actual Normal', 'Actual Crash'],
-            colorscale='Blues',
-            text=cm,
-            texttemplate="%{text}", 
-            textfont={"size": 16},
-            showscale=False
-        ))
-        
-        fig_cm.update_layout(
-            title="Confusion Matrix",
-            yaxis=dict(autorange="reversed") # To match standard matrix layout
-        )
-        st.plotly_chart(fig_cm, width="stretch")
+    # 2열 레이아웃 생성
+    col1, col2 = st.columns(2)
+    
+    # [Left] Confusion Matrix
+    with col1:
+        st.subheader("Confusion Matrix")
+        if 'confusion_matrix' in results:
+            cm = results['confusion_matrix']
+            # Heatmap
+            fig_cm = go.Figure(data=go.Heatmap(
+                z=cm, 
+                x=['Predicted Normal', 'Predicted Crash'],
+                y=['Actual Normal', 'Actual Crash'],
+                colorscale='Blues',
+                text=cm,
+                texttemplate="%{text}", 
+                textfont={"size": 16},
+                showscale=False
+            ))
+            
+            fig_cm.update_layout(
+                yaxis=dict(autorange="reversed"), # To match standard matrix layout
+                margin=dict(t=30, b=30),
+                height=350
+            )
+            st.plotly_chart(fig_cm, use_container_width=True)
 
-    # 신호 발생 통계
-    st.subheader("📅 연도별 신호 통계")
-    if 'X_test' in results and 'y_test' in results and 'y_pred' in results:
-        try:
-            X_idx = results['X_test'].index
-            y_test = results['y_test']
-            y_pred = results['y_pred']
-            
-            # 데이터프레임 생성
-            stats_df = pd.DataFrame({'Actual': y_test, 'Pred': y_pred}, index=X_idx)
-            stats_df['Year'] = stats_df.index.year
-            
-            # 집계
-            years = sorted(stats_df['Year'].unique())
-            tp_list = []
-            fp_list = []
-            fn_list = []
-            
-            for y in years:
-                sub = stats_df[stats_df['Year'] == y]
-                tp_list.append(len(sub[(sub['Actual']==1) & (sub['Pred']==1)]))
-                fp_list.append(len(sub[(sub['Actual']==0) & (sub['Pred']==1)]))
-                fn_list.append(len(sub[(sub['Actual']==1) & (sub['Pred']==0)]))
-            
-            # 차트
-            fig_stats = go.Figure()
-            fig_stats.add_trace(go.Bar(name='TP (정확)', x=years, y=tp_list, marker_color='green'))
-            fig_stats.add_trace(go.Bar(name='FP (과민)', x=years, y=fp_list, marker_color='orange'))
-            fig_stats.add_trace(go.Bar(name='FN (놓침)', x=years, y=fn_list, marker_color='red'))
-            
-            fig_stats.update_layout(barmode='stack', title="연도별 예측 상세", xaxis_title="연도", yaxis_title="건수")
-            st.plotly_chart(fig_stats, width="stretch")
-            
-        except Exception as e:
-            st.error(f"통계 차트 생성 오류: {e}")
+    # [Right] 신호 발생 통계
+    with col2:
+        st.subheader("📅 연도별 신호 통계")
+        if 'X_test' in results and 'y_test' in results and 'y_pred' in results:
+            try:
+                X_idx = results['X_test'].index
+                y_test = results['y_test']
+                y_pred = results['y_pred']
+                
+                # 데이터프레임 생성
+                stats_df = pd.DataFrame({'Actual': y_test, 'Pred': y_pred}, index=X_idx)
+                stats_df['Year'] = stats_df.index.year
+                
+                # 집계
+                years = sorted(stats_df['Year'].unique())
+                tp_list = []
+                fp_list = []
+                fn_list = []
+                
+                for y in years:
+                    sub = stats_df[stats_df['Year'] == y]
+                    tp_list.append(len(sub[(sub['Actual']==1) & (sub['Pred']==1)]))
+                    fp_list.append(len(sub[(sub['Actual']==0) & (sub['Pred']==1)]))
+                    fn_list.append(len(sub[(sub['Actual']==1) & (sub['Pred']==0)]))
+                
+                # 차트
+                fig_stats = go.Figure()
+                fig_stats.add_trace(go.Bar(name='TP (정확)', x=years, y=tp_list, marker_color='green'))
+                fig_stats.add_trace(go.Bar(name='FP (과민)', x=years, y=fp_list, marker_color='orange'))
+                fig_stats.add_trace(go.Bar(name='FN (놓침)', x=years, y=fn_list, marker_color='red'))
+                
+                fig_stats.update_layout(
+                    barmode='stack', 
+                    xaxis_title="연도", 
+                    yaxis_title="건수",
+                    margin=dict(t=30, b=30),
+                    height=350,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig_stats, use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"통계 차트 생성 오류: {e}")
 
 # ==========================================
 # Page 3: 피처 신호
