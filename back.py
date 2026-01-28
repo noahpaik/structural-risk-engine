@@ -852,37 +852,79 @@ class StructuralRiskDetector2026:
         print(f"\n{'='*70}")
         print(f"[AI] 모델 학습 시작 (Advanced Tuning)")
         
-        # [추가] 학습 시에는 라벨(crash)이 있는 데이터만 사용해야 함 (NaN 제거)
+        # 1. [중요] 라벨(crash)이 없는 데이터 제거 (학습/검증용)
         df_for_training = df.dropna(subset=['crash'])
         
-        if split_date:
-            print(f"   Split Date: {split_date}")
-        else:
-            print(f"   Test Size: {test_size:.0%}")
+        # 2. [중요] 날짜순 정렬 (이게 안 되어 있으면 분할이 꼬임)
+        df_for_training = df_for_training.sort_index()
         
-        # 기존 코드에서 df 대신 df_for_training 사용
         X = df_for_training.drop('crash', axis=1)
         y = df_for_training['crash']
         
-        # [OK] 날짜 기준 분할 우선
-        if split_date:
-            split_ts = pd.Timestamp(split_date)
-            post_split = df.index[df.index >= split_ts]
-            if not post_split.empty:
-                split_idx = df.index.get_loc(post_split[0])
-                print(f"[OK] 강제 분할 시점: {split_ts.date()}")
-            else:
-                print(f"[WARN] Split date {split_date} out of range, fallback to ratio")
-                split_idx = int(len(df) * (1 - test_size))
-        else:
-             split_idx = int(len(df) * (1 - test_size))
+        # 3. [수정] 날짜 기반 분할 (iloc 대신 명확한 조건문 사용)
+        split_ts = pd.Timestamp(split_date)
+        print(f"   Split Date: {split_ts.date()}")
         
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        # 날짜 조건으로 마스크 생성
+        mask_train = X.index < split_ts
+        mask_test = X.index >= split_ts
         
+        X_train, X_test = X[mask_train], X[mask_test]
+        y_train, y_test = y[mask_train], y[mask_test]
+        
+        # --- (에러 방지: 데이터가 비었는지 확인) ---
+        if len(X_train) == 0:
+            print("[CRITICAL ERROR] 학습 데이터가 없습니다. split_date가 너무 과거입니다.")
+            return None
+        if len(X_test) == 0:
+            print(f"[CRITICAL ERROR] 검증 데이터가 없습니다. (데이터 끝: {X.index[-1]})")
+            print(" -> 데이터가 2023년 이전까지만 있거나, 날짜 파싱 문제입니다.")
+            # 강제로 최근 20%를 테스트로 할당 (비상 조치)
+            split_idx = int(len(X) * 0.8)
+            X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+            y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+            print(f" -> [비상 조치] 마지막 20%를 검증셋으로 강제 할당함.")
+
+        # 정보 출력
         print(f"학습: {len(X_train)} ({X_train.index[0].date()} ~ {X_train.index[-1].date()})")
-        print(f"검증: {len(X_test)} ({X_test.index[0].date()} ~ {X_test.index[-1].date()})")
+        if not X_test.empty:
+            print(f"검증: {len(X_test)} ({X_test.index[0].date()} ~ {X_test.index[-1].date()})")
+        
         print(f"원본: Normal={len(y_train[y_train==0])}, Crash={len(y_train[y_train==1])}")
+        
+        # ... (이하 1. Class Imbalance Handling 부터는 기존 코드 유지) ...
+        
+        # [추가] 학습 시에는 라벨(crash)이 있는 데이터만 사용해야 함 (NaN 제거)
+        # df_for_training = df.dropna(subset=['crash'])
+        
+        #if split_date:
+        #    print(f"   Split Date: {split_date}")
+        #else:
+        #    print(f"   Test Size: {test_size:.0%}")
+        
+        # 기존 코드에서 df 대신 df_for_training 사용
+        #X = df_for_training.drop('crash', axis=1)
+        #y = df_for_training['crash']
+        
+        # [OK] 날짜 기준 분할 우선
+        #if split_date:
+        #    split_ts = pd.Timestamp(split_date)
+        #    post_split = df.index[df.index >= split_ts]
+        #    if not post_split.empty:
+        #        split_idx = df.index.get_loc(post_split[0])
+        #        print(f"[OK] 강제 분할 시점: {split_ts.date()}")
+        #    else:
+        #        print(f"[WARN] Split date {split_date} out of range, fallback to ratio")
+        #        split_idx = int(len(df) * (1 - test_size))
+        #else:
+        #     split_idx = int(len(df) * (1 - test_size))
+        
+        #X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+        #y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        
+        #print(f"학습: {len(X_train)} ({X_train.index[0].date()} ~ {X_train.index[-1].date()})")
+        #print(f"검증: {len(X_test)} ({X_test.index[0].date()} ~ {X_test.index[-1].date()})")
+        #print(f"원본: Normal={len(y_train[y_train==0])}, Crash={len(y_train[y_train==1])}")
         
         # 1. Class Imbalance Handling
         if y_train.sum() == 0:
