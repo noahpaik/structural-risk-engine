@@ -938,7 +938,7 @@ class StructuralRiskDetector2026:
                 optimal_threshold = thresholds[best_idx]
         
         # [USER REQUEST] Threshold 0.25 고정
-        # optimal_threshold = 0.25
+        optimal_threshold = 0.5
         print(f"[TARGET] Optimized Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
