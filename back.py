@@ -691,10 +691,8 @@ class StructuralRiskDetector2026:
         rolling_thresholds = signals_df.rolling(252).quantile(0.90) # 기준을 90%로 더 높임
     
         # 현재 값이 최근 1년 기준선을 넘었는가?
-        stress_counts = (signals_df > rolling_thresholds).sum(axis=1)
-        
         # 4. 개수 조건 강화: 지표 2개 -> 3개 이상 동시 폭발 시
-        stress_counts = (signals_df > thresholds).sum(axis=1)
+        stress_counts = (signals_df > rolling_thresholds).sum(axis=1)
         all_stressed = stress_counts >= 3 # [TUNING] 2 -> 3
         
         stress_groups = (all_stressed != all_stressed.shift()).cumsum()
