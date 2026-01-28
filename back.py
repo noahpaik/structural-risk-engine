@@ -41,7 +41,7 @@ class StructuralRiskDetector2026:
     # LAYER 1: 변동성 구조
     # ============================================
     
-    def get_volatility_structure(self, start_date='2018-01-01'):
+    def get_volatility_structure(self, start_date='2002-01-01'):
         """
         VIX Term Structure + SKEW + RV Regime
         """
@@ -131,7 +131,7 @@ class StructuralRiskDetector2026:
     # LAYER 2: 채권 스트레스 (SOFR 반영)
     # ============================================
     
-    def get_bond_stress_divergence(self, start_date='2018-01-01'):
+    def get_bond_stress_divergence(self, start_date='2002-01-01'):
         """
         SOFR-Treasury + MOVE-VIX Divergence + Curve (Robust: TLT Fallback & Alignment)
         """
@@ -249,7 +249,7 @@ class StructuralRiskDetector2026:
     # LAYER 3: 경제 서프라이즈
     # ============================================
     
-    def get_economic_surprise(self, start_date='2018-01-01'):
+    def get_economic_surprise(self, start_date='2002-01-01'):
         """
         YoY 가속도 기반
         """
@@ -1341,14 +1341,14 @@ if __name__ == "__main__":
     # 초기화
     detector = StructuralRiskDetector2026(fred_api_key=FRED_API_KEY)
     
-    # 데이터 준비 (2018 ~ 2026)
+    # 데이터 준비 (2002 ~ 2026)
     df = detector.prepare_training_data(
-        start_date='2018-01-01',
+        start_date='2002-01-01',
         end_date='2026-01-26'
     )
     
     if df is not None and not df.empty:
-        # 모델 학습 (2023-01-01 기준 분할: Training 2018-2022, Valid 2023-2026)
+        # 모델 학습 (2023-01-01 기준 분할: Training 2002-2022, Valid 2023-2026)
         detector.train_model(df, split_date='2023-01-01')
         
         # 현재 위험 평가
