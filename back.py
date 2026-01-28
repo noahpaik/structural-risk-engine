@@ -810,7 +810,7 @@ class StructuralRiskDetector2026:
         
         # 채권 스트레스나 유동성 감소가 동반되면 가속도 붙임
         # (z-score 기준이므로 1.0 이상이면 위험 신호)
-        bond_panic = (bond_stress_signal > 1.0).astype(int)
+        bond_panic = (bond_signal > 1.0).astype(int)
         liq_drain = (net_liq_signal < 0).astype(int)
         
         # 인덱스 정렬 
