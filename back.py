@@ -899,7 +899,7 @@ class StructuralRiskDetector2026:
             learning_rate=0.05,      # [TUNING] 0.03->0.05 (or keep low) - User asked 0.05
             subsample=0.8,
             colsample_bytree=0.8,
-            scale_pos_weight=8.0,    # [TUNING] 10->8 하향 조정
+            scale_pos_weight=5.0,    # [TUNING] 10->8 하향 조정
             random_state=42,
             eval_metric='logloss'
         )
@@ -925,8 +925,8 @@ class StructuralRiskDetector2026:
         optimal_threshold = 0.5
         
         # 분모가 0이 되는 것을 방지
-        numerator = (1 + 2**2) * (precision * recall)
-        denominator = (2**2 * precision) + recall
+        numerator = 2 * (precision * recall)
+        denominator = precision + recall
         f2_scores = np.divide(numerator, denominator, out=np.zeros_like(numerator), where=denominator!=0)
         
         # Find best threshold
@@ -937,9 +937,9 @@ class StructuralRiskDetector2026:
                 best_f2 = f2_scores[best_idx]
                 optimal_threshold = thresholds[best_idx]
         
-        # [USER REQUEST] Threshold 0.25 고정 (황금비)
-        optimal_threshold = 0.25
-        print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
+        # [USER REQUEST] Threshold 0.25 고정
+        # optimal_threshold = 0.25
+        print(f"[TARGET] Optimized Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
         
