@@ -574,7 +574,7 @@ class StructuralRiskDetector2026:
             net_liq_change = net_liq.pct_change(20)
             
             # Z-score 정규화
-            net_liq_signal = -1 * stats.zscore(net_liq_change.dropna())
+            net_liq_signal = 1 * stats.zscore(net_liq_change.dropna())
             net_liq_series = pd.Series(net_liq_signal, index=net_liq_change.dropna().index)
             
             print(f"  [OK] TGA 데이터: {len(tga)} 포인트")
