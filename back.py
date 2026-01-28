@@ -810,16 +810,19 @@ class StructuralRiskDetector2026:
         # (z-score 기준이므로 1.0 이상이면 위험 신호)
         bond_panic = (bond_signal > 1.0).astype(int)
         liq_drain = (net_liq_signal < 0).astype(int)
+        # [NEW] 환율 발작 감지 (FX Carry 급락 = 자본 유출/회피 심리 폭발)
+        fx_panic = (fx_carry_signal < -1.0).astype(int)
         
         # 인덱스 정렬 
         bond_panic = bond_panic.reindex(hmm_signal.index).fillna(0)
         liq_drain = liq_drain.reindex(hmm_signal.index).fillna(0)
+        fx_panic = fx_panic.reindex(hmm_signal.index).fillna(0)
         
         for i in range(len(hmm_signal)):
             if is_overheated.iloc[i]:
                 # [핵심] 그냥 과열이면 +1, 채권도 같이 미치면 +5 (급속 가열)
-                # 이렇게 해야 폭락 직전에 신호가 수직 상승해서 '선행성'을 가짐
-                acceleration = 1 + (bond_panic.iloc[i] * 4) + (liq_drain.iloc[i] * 2)
+                # [수정] 환율(FX) 발작도 채권만큼 위험하게 반영 (+4)
+                acceleration = 1 + (bond_panic.iloc[i] * 4) + (fx_panic.iloc[i] * 4) + (liq_drain.iloc[i] * 2)
                 current_strain += acceleration
                 
             elif is_stress.iloc[i]:
@@ -859,7 +862,10 @@ class StructuralRiskDetector2026:
             # Z-score 1.0 미만의 잡음은 0으로 처리 (Noise Gate)
             'context_bond_stress': (bond_signal * accumulated_strain * (bond_signal > 1.0).astype(int)).astype(float),
             'context_liquidity_drain': ((net_liq_signal * -1) * accumulated_strain * (net_liq_signal < -1.0).astype(int)).astype(float),
-            'context_momentum_crash': ((momentum_signal * -1) * accumulated_strain).astype(float)             
+            'context_momentum_crash': ((momentum_signal * -1) * accumulated_strain).astype(float),
+            
+            # [NEW] 환율(FX) 트리거 추가 (Carry 청산 쇼크)
+            'context_fx_shock': ((fx_carry_signal * -1) * accumulated_strain * fx_panic).astype(float)             
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
         }).sort_index().ffill().dropna()
