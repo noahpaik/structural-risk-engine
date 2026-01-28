@@ -1054,8 +1054,8 @@ class StructuralRiskDetector2026:
             print("[WARN] 학습 데이터에 Crash 없음. Dummy Model 사용.")
             pos_weight = 1.0
         else:
-            # [USER REQUEST] 가중치 10으로 고정 (Overfitting 방지)
-            pos_weight = 15.0
+            # [USER REQUEST] 가중치 20으로 상향 (틀리면 죽는다)
+            pos_weight = 20.0
             print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
         # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
@@ -1069,7 +1069,7 @@ class StructuralRiskDetector2026:
             learning_rate=0.04,      # [TUNING] 0.03->0.05 (or keep low) - User asked 0.05
             subsample=0.8,
             colsample_bytree=0.8,
-            scale_pos_weight=1.0,    # [TUNING] 10->8 하향 조정
+            scale_pos_weight=pos_weight,    # [FIX] 하드코딩(1.0) 제거하고 변수 적용
             random_state=42,
             eval_metric='logloss'
         )
@@ -1084,8 +1084,8 @@ class StructuralRiskDetector2026:
         # 예측 확률
         y_pred_proba = self.model.predict_proba(X_test)[:, 1]
         
-        # [SMOOTHING] EMA 20 적용 (Noise Reduction)
-        y_pred_proba = pd.Series(y_pred_proba).ewm(span=5).mean().values
+        # [SMOOTHING] 물 타기 금지! (span=20 -> 3)
+        y_pred_proba = pd.Series(y_pred_proba).ewm(span=3).mean().values
         
         # 3. Dynamic Thresholding (Maximize F2-Score)
         # F2-Score: Recall에 Precision보다 2배 더 가중치 (Beta=2)
@@ -1107,8 +1107,8 @@ class StructuralRiskDetector2026:
         #        best_f2 = f2_scores[best_idx]
         #        optimal_threshold = thresholds[best_idx]
         
-        # Threshold 0.5 고정
-        optimal_threshold = 0.5
+        # Threshold 0.25 하향 (합격 기준 완화)
+        optimal_threshold = 0.25
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
@@ -1344,8 +1344,8 @@ class StructuralRiskDetector2026:
         X_window = X.iloc[-100:] if len(X) > 100 else X
         proba_window = self.model.predict_proba(X_window)[:, 1]
         
-        # [SMOOTHING] EMA 20 적용
-        smoothed_proba = pd.Series(proba_window).ewm(span=20).mean()
+        # [SMOOTHING] 물 타기 금지! (span=20 -> 3)
+        smoothed_proba = pd.Series(proba_window).ewm(span=3).mean()
         crash_proba = smoothed_proba.iloc[-1]
         
         if len(proba_window) == 0:
