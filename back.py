@@ -76,7 +76,7 @@ class StructuralRiskDetector2026:
                 vix3m = get_data('^VXV')
             
             if vix.empty or vix3m.empty:
-                 print("[WARN]  필수 데이터(VIX) 누락")
+                 print("[WARN] 필수 데이터(VIX) 누락")
                  return pd.Series()
 
             # Term Structure Ratio (핵심)
@@ -95,7 +95,7 @@ class StructuralRiskDetector2026:
             # Realized Volatility Regime
             spy = get_data('SPY')
             if spy.empty:
-                print("[WARN]  SPY 데이터 누락")
+                print("[WARN] SPY 데이터 누락")
                 return pd.Series()
             
             returns = spy.pct_change()
@@ -1164,7 +1164,7 @@ class StructuralRiskDetector2026:
         현재 시점 위험 평가 (2026-01-26)
         """
         if self.model is None:
-            print("[WARN]  먼저 모델 학습 필요")
+            print("[WARN] 먼저 모델 학습 필요")
             return
         
         X = df.drop('crash', axis=1)
@@ -1215,7 +1215,7 @@ class StructuralRiskDetector2026:
         if 'sync_stress_duration' in current_features.columns:
             sync_days = current_features['sync_stress_duration'].values[0]
             if sync_days > 0:
-                print(f"\n[WARN]  구조적 스트레스 지속: {sync_days:.0f}일")
+                print(f"\n[WARN] 구조적 스트레스 지속: {sync_days:.0f}일")
         
         print(f"{'='*70}\n")
         
