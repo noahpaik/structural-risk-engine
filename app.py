@@ -288,14 +288,7 @@ elif page == "📈 Backtest 결과":
     
     st.markdown("---")
     
-    # Confusion Matrix
-    if 'confusion_matrix' in results:
-        cm = results['confusion_matrix']
-        # Heatmap
-        fig_cm = go.Figure(data=go.Heatmap(
-            z=[[cm[1,1], cm[0,1]], [cm[1,0], cm[0,0]]], # TP, FP / FN, TN 순서? 보통은 TN FP / FN TP
-            x=['Crash (Pred)', 'Normal (Pred)'],
-            y=['Crash (Actual)', 'Normal (Actual)'],
+
     # 2열 레이아웃 생성
     col1, col2 = st.columns(2)
     
