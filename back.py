@@ -771,8 +771,8 @@ class StructuralRiskDetector2026:
         
         # 통합
         crash_labels = (
-            (future_dd_20 < -0.07) | # [RELAXED] -10% -> -7% 로 완화
-            ((future_10d < -0.07) & vix_spike)
+            (future_dd_20 < -0.05) | # [RELAXED] -10% -> -7% 로 완화
+            ((future_10d < -0.05) & vix_spike)
         ).astype(int)
         
         crash_labels.name = 'crash'
