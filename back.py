@@ -855,9 +855,10 @@ class StructuralRiskDetector2026:
             'strain_x_drain': strain_x_drain.astype(float),
 
             # [AMPLIFIER] Context Interaction Features (Pressure Cooker Logic)
-            # "압력이 꽉 찼을 때(Strain High) 작은 충격도 증폭된다"
-            'context_bond_stress': (bond_signal * accumulated_strain).astype(float),
-            'context_liquidity_drain': ((net_liq_signal * -1) * accumulated_strain).astype(float),
+            # [GATE] "확실한 충격(Impact) 아니면 곱하지 마라"
+            # Z-score 1.0 미만의 잡음은 0으로 처리 (Noise Gate)
+            'context_bond_stress': (bond_signal * accumulated_strain * (bond_signal > 1.0).astype(int)).astype(float),
+            'context_liquidity_drain': ((net_liq_signal * -1) * accumulated_strain * (net_liq_signal < -1.0).astype(int)).astype(float),
             'context_momentum_crash': ((momentum_signal * -1) * accumulated_strain).astype(float)             
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
@@ -1140,8 +1141,10 @@ class StructuralRiskDetector2026:
             scale_pos_weight=pos_weight,
             
             # [NEW] 정밀도(Precision)를 올리는 핵심 파라미터 추가!
-            gamma=0.2,               # "확실한 이득이 없으면 가지를 치지 마라" (노이즈 제거)
-            min_child_weight=3,      # "샘플이 너무 적은 케이스는 무시해라" (특이값 무시)
+            # 기본값 0 -> 1.5 (노이즈에 과민반응 금지)
+            gamma=1.5,               
+            # 기본값 1 -> 5 (너무 적은 샘플로 판단 금지)
+            min_child_weight=5,
             
             random_state=42,
             eval_metric='logloss'
@@ -1180,10 +1183,8 @@ class StructuralRiskDetector2026:
         #        best_f2 = f2_scores[best_idx]
         #        optimal_threshold = thresholds[best_idx]
         
-        # [핵심] 임계값 하향 조정 (Recall 복구)
-        # 0.65 -> 0.38
-        # "증폭된 신호가 들어왔다면, 확률 38%만 넘어도 경보를 울려라."
-        optimal_threshold = 0.38
+        # [수정] 오경보를 줄이기 위해 다시 상향
+        optimal_threshold = 0.45
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
