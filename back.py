@@ -919,27 +919,27 @@ class StructuralRiskDetector2026:
         
         # 3. Dynamic Thresholding (Maximize F2-Score)
         # F2-Score: Recall에 Precision보다 2배 더 가중치 (Beta=2)
-        precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
+        #precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
         
-        best_f2 = 0
-        optimal_threshold = 0.5
+        #best_f2 = 0
+        #optimal_threshold = 0.5
         
         # 분모가 0이 되는 것을 방지
-        numerator = 2 * (precision * recall)
-        denominator = precision + recall
-        f2_scores = np.divide(numerator, denominator, out=np.zeros_like(numerator), where=denominator!=0)
+        #numerator = 2 * (precision * recall)
+        #denominator = precision + recall
+        #f2_scores = np.divide(numerator, denominator, out=np.zeros_like(numerator), where=denominator!=0)
         
         # Find best threshold
-        if len(thresholds) > 0:
-            best_idx = np.argmax(f2_scores[:-1]) # thresholds length = recall length - 1 (usually)
-            # scikit-learn precision_recall_curve: thresholds is shorter by 1
-            if best_idx < len(thresholds):
-                best_f2 = f2_scores[best_idx]
-                optimal_threshold = thresholds[best_idx]
+        # if len(thresholds) > 0:
+        #    best_idx = np.argmax(f2_scores[:-1]) # thresholds length = recall length - 1 (usually)
+        #    # scikit-learn precision_recall_curve: thresholds is shorter by 1
+        #    if best_idx < len(thresholds):
+        #        best_f2 = f2_scores[best_idx]
+        #        optimal_threshold = thresholds[best_idx]
         
-        # [USER REQUEST] Threshold 0.25 고정
-        optimal_threshold = 0.5
-        print(f"[TARGET] Optimized Threshold: {optimal_threshold:.3f}")
+        # Threshold 0.7 고정
+        optimal_threshold = 0.7
+        print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
         
