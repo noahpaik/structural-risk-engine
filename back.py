@@ -688,7 +688,7 @@ class StructuralRiskDetector2026:
         # [수정] 2023-24년 노이즈 제거를 위해 Rolling Quantile 도입 (Regime Adaptive)
         # "최근 1년(252일) 동안 본 것 중에 상위 10%냐?"
         
-        rolling_thresholds = signals_df.rolling(252).quantile(0.90) # 기준을 90%로 더 높임
+        rolling_thresholds = signals_df.rolling(252).quantile(0.80) # 기준을 80%
     
         # 현재 값이 최근 1년 기준선을 넘었는가?
         # 4. 개수 조건 강화: 지표 2개 -> 3개 이상 동시 폭발 시
@@ -852,7 +852,13 @@ class StructuralRiskDetector2026:
             'hmm_overheated': is_overheated.astype(int), 
             'hmm_strain': accumulated_strain.astype(float),            
             'hmm_strain_vel': accumulated_strain.diff().fillna(0).astype(float), 
-            'strain_x_drain': strain_x_drain.astype(float)             
+            'strain_x_drain': strain_x_drain.astype(float),
+
+            # [AMPLIFIER] Context Interaction Features (Pressure Cooker Logic)
+            # "압력이 꽉 찼을 때(Strain High) 작은 충격도 증폭된다"
+            'context_bond_stress': (bond_signal * accumulated_strain).astype(float),
+            'context_liquidity_drain': ((net_liq_signal * -1) * accumulated_strain).astype(float),
+            'context_momentum_crash': ((momentum_signal * -1) * accumulated_strain).astype(float)             
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
         }).sort_index().ffill().dropna()
@@ -1127,8 +1133,8 @@ class StructuralRiskDetector2026:
         # XGBoost 학습
         self.model = XGBClassifier(
             n_estimators=500,
-            learning_rate=0.05,      # 0.02 -> 0.05 (조금 더 빨리 배워라)
-            max_depth=5,             # 4 -> 5 (조금 더 복잡한 패턴 허용)
+            learning_rate=0.03,      # 0.05 -> 0.03 (다시 조금 침착하게)
+            max_depth=6,             # 5 -> 6 (복잡한 곱셈 관계 이해하도록 깊이 증가)
             subsample=0.7,
             colsample_bytree=0.7,
             scale_pos_weight=pos_weight,
@@ -1174,9 +1180,10 @@ class StructuralRiskDetector2026:
         #        best_f2 = f2_scores[best_idx]
         #        optimal_threshold = thresholds[best_idx]
         
-        # [수정] Threshold 중용 (황금비율)
-        # 0.45: "확률 반반 싸움보다는 조금 더 확신이 들 때(45%) 쏴라"
-        optimal_threshold = 0.45 
+        # [핵심] 임계값 하향 조정 (Recall 복구)
+        # 0.65 -> 0.38
+        # "증폭된 신호가 들어왔다면, 확률 38%만 넘어도 경보를 울려라."
+        optimal_threshold = 0.38
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
