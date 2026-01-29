@@ -857,10 +857,7 @@ class StructuralRiskDetector2026:
         tcpc_panic = tcpc_panic.reindex(hmm_signal.index).fillna(0)
         
         for i in range(len(hmm_signal)):
-            # 1. 추세 밸브 확인
-            current_price = spy_close.iloc[i]
-            trend_line = spy_ma50.iloc[i]
-            is_bull_market = (current_price > trend_line) if not np.isnan(trend_line) else False
+
             
             # [NEW] 외부 충격 가속도 계산 (HMM 상태와 무관하게 계산)
             # 환율(FX)에 가장 높은 가중치 5 부여 (2025년 타겟팅)
@@ -876,11 +873,6 @@ class StructuralRiskDetector2026:
                 # [핵심 수정 1] 폭락 발생(Stress) -> 압력 즉시 소멸
                 # 기존: -2씩 차감 (너무 느림) -> 수정: 0으로 초기화 (폭발했으니까!)
                 current_strain = 0
-                
-            elif is_bull_market:
-                # [핵심 수정 2] 상승장(Bull) -> 압력 해제
-                # 상승장에서는 압력을 0으로 유지 (모멘텀이 압력을 이김)
-                current_strain = 0 
                 
             elif is_overheated.iloc[i]:
                 # 과열 상태 + 하락 추세 -> 압력 축적
