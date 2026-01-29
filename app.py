@@ -571,102 +571,212 @@ elif page == "🔬 모델 진단":
 # ==========================================
 # Page 5: About
 # ==========================================
+# ==========================================
+# Page 5: About
+# ==========================================
 elif page == "ℹ️ About":
-    st.header("🧠 Structural Risk Engine (Sheikh Sadik 2024 기반)")
-    st.markdown("### \"시장은 가장 고요할 때 붕괴한다.\"")
-    
-    st.info("""
-    **이 모델은 단순한 기술적 분석 도구가 아닙니다.**  
-    금융시장의 **'구조적 취약성(Structural Fragility)'**을 탐지하여, 
-    모두가 안심하는 상승장 속에서 **시스템 붕괴의 전조(Precursors)**를 찾아내는 데 특화되어 있습니다.
-    """)
+    st.header("🧠 구조적 위험 탐지 시스템 (Structural Risk Detector 2026)")
+    st.markdown("### \"Sheikh Sadik (2024) 논문 기반 - 21일 조기경보 시스템\"")
     
     st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("1. 🌪️ 불안정성의 역설 (Paradox of Instability)")
-        st.write("""
-        > *"Stability breeds Instability." - Hyman Minsky*
-        
-        기존 모델들은 **변동성(Volatility)**이 낮으면 '안전하다'고 판단합니다. 
-        하지만 이 모델은 다릅니다. **낮은 변동성이 오래 지속되면**, 
-        투자자들은 과도한 레버리지를 쓰게 되고, 시스템은 오히려 **'살얼음판(Fragile)'**이 됩니다.
-        
-        이 모델은 **Absorption Ratio(흡수 비율)**와 **Skewness(비대칭성)**를 통해 
-        이 숨겨진 위험을 감지합니다.
-        """)
-        
-        st.subheader("3. 🧲 흡수 비율 (Absorption Ratio)")
-        st.write("""
-        시장이 정상일 때, 주식/채권/원자재는 각자 따로 움직입니다.
-        하지만 위기가 다가오면, 모든 자산이 **하나의 거대한 요인(공포)**에 의해 
-        **동조화(Synchronization)**되기 시작합니다.
-        
-        이 비율이 급등하면, 사소한 충격에도 시스템 전체가 무너질 수 있습니다.
-        """)
-    
-    with col2:
-        st.subheader("2. 🏗️ 구조적 HMM (Structural HMM)")
-        st.write("""
-        단순히 가격이 오르고 내리는 것을 넘어, **'시장 구조'**를 3단계로 진단합니다.
-        
-        - **🟢 Normal (안정)**: 건전한 상승장. 편안하게 투자하세요.
-        - **🟠 Fragile (살얼음판)**: 가격은 오르지만, 내부적으로 **Skew가 깨지고(하락 징후)** 자산 간 **동조화**가 심해진 상태. **가장 위험한 구간**입니다.
-        - **🔴 Stress (붕괴)**: 이미 위기가 터진 상태. 변동성이 폭발합니다.
-        """)
-        
-        st.subheader("4. 🔬 이중 필터 변수 선택 (Double Filter)")
-        st.write("""
-        수만 개의 데이터 중 '진짜 신호'만 걸러내기 위해 두 번 거릅니다.
-        1.  **Point Biserial**: 선형적인 상관관계가 뚜렷한가?
-        2.  **Mutual Information**: 비선형적인 정보량(Entropy)이 높은가?
-        
-        이 둘의 **교집합(Intersection)**에 해당하는 상위 50% 지표만 사용하여, 
-        가짜 신호(Noise)에 속지 않습니다.
-        """)
-        
-    st.markdown("---")
-    
-    st.header("🛠️ 상세 피처 명세서 (Data & Logic)")
+
     st.markdown("""
-    이 모델이 사용하는 주요 피처들의 데이터 원천과 계산 로직입니다.
+    ## 1. 시스템 아키텍처 개요
+
+    ```
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                    INPUT LAYERS (원시 신호)                          │
+    ├──────────┬──────────┬──────────┬──────────┬──────────┬─────────────┤
+    │ Layer 1  │ Layer 2  │ Layer 3  │ Layer 3.5│ Layer 3.8│ Layer 3.9   │
+    │변동성구조│채권스트레스│경제서프라이즈│모멘텀지표│유동성미세구조│FX캐리리스크│
+    └────┬─────┴────┬─────┴────┬─────┴────┬─────┴────┬─────┴──────┬──────┘
+         │          │          │          │          │            │
+         ▼          ▼          ▼          ▼          ▼            ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │              STRUCTURAL FEATURES (구조적 특성)                       │
+    ├─────────────────┬─────────────────┬─────────────────────────────────┤
+    │ Paper Features  │ Absorption Ratio│ HMM Regime Detection            │
+    │ (Skew/Kurt/Corr)│ (시스템 리스크) │ (Normal/Fragile/Stress)         │
+    └────────┬────────┴────────┬────────┴────────────┬────────────────────┘
+             │                 │                     │
+             ▼                 ▼                     ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │              PRESSURE COOKER LOGIC (압력밥솥 로직)                   │
+    │  HMM Strain (누적 압력) + Context Interaction Features               │
+    └─────────────────────────────┬───────────────────────────────────────┘
+                                  │
+                                  ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │              PATH-DEPENDENT FEATURES (경로 의존 변수)                │
+    │  Duration (지속기간) + Acceleration (가속도) + Sync Stress           │
+    └─────────────────────────────┬───────────────────────────────────────┘
+                                  │
+                                  ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │              DOUBLE-FILTER FEATURE SELECTION                        │
+    │  Point Biserial Correlation ∩ Mutual Information                    │
+    └─────────────────────────────┬───────────────────────────────────────┘
+                                  │
+                                  ▼
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │              ENSEMBLE MODEL (앙상블 모델)                            │
+    │  Random Forest + XGBoost → Soft Voting                              │
+    └─────────────────────────────┬───────────────────────────────────────┘
+                                  │
+                                  ▼
+                        ┌─────────────────┐
+                        │  21일 폭락 확률  │
+                        │  (0% ~ 100%)    │
+                        └─────────────────┘
+    ```
+
+    ---
+
+    ## 2. Layer 1: 변동성 구조 (`get_volatility_structure`)
+
+    **목적**: VIX 기반으로 시장의 공포와 불안정성을 측정
+
+    ### 핵심 지표 4가지:
+
+    | 지표 | 계산 방식 | 의미 |
+    |------|----------|------|
+    | **Term Ratio** | VIX(1개월) / VIX3M(3개월) | >1이면 백워데이션 (단기 공포 > 장기) |
+    | **Backwardation** | Term Ratio > 1.0 여부 | 백워데이션 발생 시 1, 아니면 0 |
+    | **Skew Stress** | (SKEW - 100) / 10 | 풋옵션 수요 증가 → 꼬리 위험 인식 |
+    | **RV Regime** | 5일 RV / 60일 RV | 단기 변동성이 장기 대비 급등 여부 |
+
+    ---
+
+    ## 3. Layer 2: 채권 스트레스 (`get_bond_stress_divergence`)
+
+    **목적**: 채권시장의 스트레스와 신용 위험을 측정
+
+    ### 핵심 지표 4가지:
+
+    | 지표 | 계산 방식 | 의미 |
+    |------|----------|------|
+    | **MOVE-VIX Divergence** | MOVE Z-score - VIX Z-score | 채권 변동성이 주식보다 먼저 반응 (선행지표) |
+    | **SOFR Stress** | SOFR 3개월 평균 - 3개월 국채 | 단기 자금시장 경색 |
+    | **HY Stress** | 하이일드 스프레드 Z-score | 정크본드 위험 프리미엄 |
+    | **Inversion Stress** | -(10Y - 2Y).clip(upper=0) | 수익률 곡선 역전 (경기침체 신호) |
+
+    ---
+
+    ## 4. Layer 3: 경제 서프라이즈 (`get_economic_surprise`)
+
+    **목적**: 거시경제 데이터의 "가속도"를 측정
+
+    - **UNRATE**: 실업률
+    - **CPIAUCSL**: CPI
+    - **INDPRO**: 산업생산지수
+
+    **의미**: 단순히 "나빠졌다"가 아니라 "나빠지는 속도가 빨라졌다"를 포착
+
+    ---
+
+    ## 5. Layer 3.5: 모멘텀 지표 (`get_momentum_indicators`)
+
+    **목적**: 기술적 분석 신호로 과열/과매도 탐지
+
+    | 지표 | 계산 방식 | 의미 |
+    |------|----------|------|
+    | **RSI Divergence** | 가격 신고점 + RSI 저고점 | 베어리시 다이버전스 (숨겨진 약세) |
+    | **MACD Stress** | MACD 히스토그램 Z-score | 음수일수록 약세 모멘텀 |
+    | **Price Deviation** | (Price - MA200) / MA200 | 장기 추세 대비 이탈 정도 |
+
+    ---
+
+    ## 6. Layer 3.8: 유동성 미세구조 (`get_liquidity_indicators`)
+
+    **목적**: 무료 OHLCV 데이터로 시장 미세구조(유동성) 추정
+
+    | 지표 | 계산 방식 | 의미 |
+    |------|----------|------|
+    | **Amihud Illiquidity** | |수익률| / 거래대금 | 같은 거래량에 가격이 많이 움직임 = 유동성 부족 |
+    | **Corwin-Schultz Spread** | High/Low 기반 스프레드 추정 | 매수-매도 스프레드 (거래비용) |
+    | **VVIX Divergence** | VVIX Z-score - VIX Z-score | "변동성의 변동성"이 먼저 튀는지 |
+
+    ---
+
+    ## 7. Layer 3.9: FX 캐리 리스크 (`get_fx_carry_risk`)
+
+    **목적**: 환율 변동성으로 글로벌 충격 감지
+    **의미**: 엔캐리 청산 같은 글로벌 충격 포착 (USD/JPY, DXY 변동성 측정)
+
+    ---
+
+    ## 8. Layer 3.95: 순유동성 (`get_net_liquidity`)
+
+    **핵심 공식**: `Net Liquidity = Fed Balance Sheet - TGA - RRP`
+    **해석**: 순유동성이 줄어들면 → 시장에 돈이 마름 → 위험
+
+    ---
+
+    ## 9. Paper Features (Sheikh Sadik 2024 정렬)
+
+    ### 9.1 고차 모멘트 (`get_paper_features`)
+    | 지표 | 의미 |
+    |------|------|
+    | **Skewness** | 음수 Skew = 왼쪽 꼬리 위험 (급락 가능성) |
+    | **Kurtosis** | 높은 Kurtosis = 꼬리가 두꺼움 (극단적 사건) |
+    | **Correlation** | 주식과 국채/VIX가 같이 움직이면(동조화) 시스템 위기 |
+
+    ### 9.2 Absorption Ratio (`get_absorption_ratio`)
+    - **PCA(주성분분석)**. 9개 섹터가 2개의 거대 요인에 의해 몇 %나 설명되는가? 
+    - 높을수록 **동조화(위기 전조)**.
+
+    ---
+
+    ## 10. HMM 기반 국면 탐지 (`get_market_regime_hmm`)
+
+    **목적**: 시장을 3가지 상태로 분류 (비선형적)
+
+    | 상태 | 정의 | 특징 |
+    |------|------|------|
+    | **Normal (0)** | 평온 | 낮은 변동성, 정상 Skew/Corr |
+    | **Fragile/Overheated (1)** | 과열/살얼음 | 낮은 Vol인데 Skew 악화, Corr 상승 (가장 위험!) |
+    | **Stress (2)** | 스트레스 | 변동성 폭발 (폭락 진행 중) |
+
+    ---
+
+    ## 11. 압력밥솥 로직 (Pressure Cooker)
+
+    **핵심 아이디어**: Fragile 상태에서 압력이 쌓이다가, 외부 충격이 오면 폭발
     
-    | Layer / Feature | 입력 데이터 (Data Source) | 계산 로직 및 의도 (Logic & Rationale) |
-    | :--- | :--- | :--- |
-    | **1. Volatility** | `^VIX` (CBOE Volatility Index) | **공포 지수**. 252일 이동평균 대비 현재 수준(Z-score) 측정. 높을수록 시장 공포 극대화. |
-    | **2. Bond Stress** | `^TNX` (10Y), `SHY` (2Y Proxy) | **장단기 금리차**. 수익률 곡선 역전(Inversion) 후 급격한 스티프닝(Steepening) 탐지. |
-    | **3. Macro (Eco)** | `UNRATE` (실업률), `RECPRO` (침체확률) | **샴의 법칙(Sahm Rule)** 변형. 실업률 이동평균이 급격히 상승하는 구간 포착. |
-    | **4. Momentum** | `SPY` (S&P 500 Price) | **RSI & MA Divergence**. 가격이 200일 이동평균선보다 얼마나 과도하게 벌어졌는지 측정. |
-    | **5. Liquidity** | `SPY` (OHLCV High/Low/Vol) | **Amihud & Corwin-Schultz**. 거래량 대비 가격 변화폭. 수치가 튀면 "팔 사람은 많은데 살 사람이 없는" 상태. |
-    | **6. FX Carry** | `JPY=X` (엔/달러 환율) | **캐리 트레이드 청산**. 엔화의 변동성이 급증하면 글로벌 자금 회수(Margin Call) 신호. |
-    | **7. Net Liquidity** | `WALCL` (Fed 자산), `TGA`, `RRP` | **연준 순유동성**. `Fed 자산 - (재무부 계좌 + 역레포)`. 실제 시장에 풀려있는 달러 총량 측정. |
-    | **8. Paper Features** | `SPY`, `TLT` (20Y Treasury) | **Skewness**: 수익률 분포가 왼쪽으로 찌그러짐(급락 위험). <br> **Correlation**: 주식과 국채가 같이 떨어지면(양의 상관관계) 시스템 위기. |
-    | **9. Absorption Ratio** | 9개 섹터 ETF (`XLK`, `XLF` 등) | **PCA(주성분분석)**. 9개 섹터가 2개의 요인에 의해 몇 %나 설명되는가? 높을수록 **동조화(위기 전조)**. |
-    | **10. Structural HMM** | `Vol`, `Skew`, `Corr`, `Absorb` | **비지도 학습**. 단순히 가격만 보는 게 아니라, 위 4가지 구조적 지표를 종합해 **'Fragile State'** 판별. |
+    ### Context Interaction Features:
+    - **Bond Stress Trigger**: 채권 충격 × 누적 압력
+    - **FX Shock Trigger**: 환율 충격 × 누적 압력
+
+    ---
+
+    ## 12. 전체 Feature 목록 (최종)
+
+    ### 원시 신호 (Base)
+    - Volatility, Bond Stress, Eco Suprise
+    - Momentum, Liquidity, FX Carry, Net Liquidity
+
+    ### 구조적/파생 변수 (Structural/Derived)
+    - **HMM State**: Normal / Fragile / Stress
+    - **Interpretation**: HMM Strain (누적 압력), Stress Duration (지속 기간)
+    - **Crisis Context**: Context Bond/FX/Vol Features
+
+    ### 논문 변수 (Paper)
+    - Skewness (66, 252), Kurtosis
+    - Absorption Ratio, SPY-TLT Correlation
+
+    ---
+
+    ## 13. 핵심 설계 철학 요약
+
+    | 원칙 | 구현 |
+    |------|------|
+    | **선행성** | MOVE-VIX Divergence, VVIX, Absorption Ratio |
+    | **구조적 위험** | HMM으로 "겉은 멀쩡한데 속이 썩는" 상태 포착 |
+    | **경로 의존성** | Duration, Acceleration으로 "지속"과 "가속" 측정 |
+    | **비선형 상호작용** | Context Features로 "압력 × 충격" 결합 |
+    | **Recall 우선** | 10배 Class Weight, 85% Recall 목표 임계값 |
+    | **Crisis Focus** | 2000, 2008, 2020년 위기에 샘플 가중치 3배 |
+
+    이 시스템의 궁극적 목표는 **"놓치는 폭락을 최소화"**하는 것입니다.  
+    Precision이 낮아져도(오경보가 많아도) **Recall을 높여서 실제 폭락을 절대 놓치지 않는 전략**입니다.
     """)
-    
-    st.markdown("---")
-    st.subheader("⚙️ System Architecture Overview")
-    st.code("""
-    [Input Data] 
-      ├── Market Prices (SPY, TLT, VIX)
-      ├── Macro Indicators (Unemployment, Yield Curve)
-      └── Liquidity Metircs (Net Liquidity, FX Carry)
-          ⬇️
-    [Feature Engineering]
-      ├── Structural Features (Skewness, Kurtosis)
-      ├── Systemic Risk (Absorption Ratio, Correlation)
-      └── HMM Regime Detection (Vol + Skew + Corr)
-          ⬇️
-    [Feature Selection]
-      🔍 Double Filter (Point Biserial ∩ Mutual Info)
-          ⬇️
-    [Ensemble Model]
-      🤖 Random Forest (Bagging) + XGBoost (Boosting)
-      ⚖️ Voting Classifier (Soft Voting)
-          ⬇️
-    [Prediction]
-      🚨 Crash Probability (0 ~ 100%)
-    """, language='text')
