@@ -1006,6 +1006,38 @@ class StructuralRiskDetector2026:
         except Exception as e:
             print(f"[WARN] Net Liquidity timezone conversion error: {e}")
 
+        # ==============================================================================
+        # [NEW] 사모신용(Private Credit) 스트레스 - TCPC 중심
+        # 논리: "공모 하이일드(HYG)는 버티는데, 사모 대출(TCPC) 가격이 무너지면 구조적 위기다."
+        # ==============================================================================
+        print("   [INFO] 사모신용(TCPC) 데이터 로드 중...")
+        try:
+            tcpc_data = yf.download('TCPC', start=start_date, progress=False)
+            if isinstance(tcpc_data.columns, pd.MultiIndex):
+                tcpc_data.columns = tcpc_data.columns.get_level_values(0)
+            if tcpc_data.index.tz is not None: tcpc_data.index = tcpc_data.index.tz_localize(None)
+            
+            tcpc_price = tcpc_data['Close'] if 'Close' in tcpc_data.columns else tcpc_data.iloc[:, 0]
+            tcpc_price = tcpc_price.reindex(spy_close.index).ffill()
+            
+            # TCPC Drawdown (전고점 대비 하락폭) -> 양수 변환 (Stress 높을수록 큼)
+            roll_max = tcpc_price.rolling(252, min_periods=1).max()
+            tcpc_drawdown = (tcpc_price - roll_max) / roll_max
+            private_credit_signal = tcpc_drawdown * -1 # 양수화 (0~1)
+            
+            # 2012년 이전 데이터 부족 처리
+            private_credit_signal = private_credit_signal.fillna(0) # 0으로 채움 (Pre-2012 safe assumption)
+            
+            # TCPC Panic (급락)
+            tcpc_panic = (private_credit_signal > 0.2).astype(int) # -20% 이상 하락 시 패닉
+            
+            print(f"   [OK] Private Credit Signal 생성 완료 (Max Stress: {private_credit_signal.max():.2f})")
+            
+        except Exception as e:
+            print(f"[WARN] Private Credit(TCPC) 로드 실패: {e}")
+            private_credit_signal = pd.Series(0, index=spy_close.index)
+            tcpc_panic = pd.Series(0, index=spy_close.index)
+
         # [LOGIC] HMM 모듈 제거 -> 'Pure Macro Stress' 모드로 전환
         print("[Logic] HMM 모듈 제거 -> 'Pure Macro Stress' 모드로 전환합니다.")
         
