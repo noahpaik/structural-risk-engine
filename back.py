@@ -1467,6 +1467,9 @@ class StructuralRiskDetector2026:
         X = X[selected_features]
         print(f"   [INFO] 학습 데이터를 선택된 변수로 한정했습니다.")
         
+        # [CRITICAL] 선택된 변수 저장 (Inference용)
+        self.selected_features = selected_features
+        
         # ======================================================================
         # [NEW] 샘플 가중치(Sample Weight) 생성 - Crisis Focus
         # ======================================================================
@@ -1753,6 +1756,17 @@ class StructuralRiskDetector2026:
         # train_model에서 drop_cols 동일하게 적용
         drop_cols = ['crash', 'private_credit', 'context_private_credit', 'private_credit_duration', 'private_credit_accel']
         X = df.drop(columns=drop_cols, errors='ignore')
+        
+        # [Fix] Feature Selection 적용
+        if hasattr(self, 'selected_features') and self.selected_features:
+            missing_cols = set(self.selected_features) - set(X.columns)
+            if missing_cols:
+                print(f"[WARN] 예측 시 누락된 중요 변수: {missing_cols}")
+                # 누락된 건 0으로 채움 (임시 방편)
+                for c in missing_cols:
+                    X[c] = 0
+            
+            X = X[self.selected_features]
         
         current_features = X.iloc[-1:].copy()
         
