@@ -882,31 +882,25 @@ class StructuralRiskDetector2026:
             path_features[f'{col}_accel'] = accel
         
         # 3. Reference: Count-based Synchronized Stress
-        # [수정] 모든 변수를 다 쓰지 않고, "High = Stress"인 핵심 변수만 선별 사용 ('Net Liq', 'Eco' 제외)
-        stress_candidates = ['volatility', 'bond_stress', 'fx_carry', 'private_credit', 'hmm_strain']
+        # [수정 핵심] 2019년 Repo 발작 무시하기
+        # 1. 기준 강화: 상위 35%(0.65) -> 상위 15%(0.85) (진짜 위험할 때만 켜짐)
+        # 2. 기간 확대: 과거 1년(252) -> 과거 2년(504) (2017년 저변동성 장세 착시 방지)
+        # [수정] 2023-24년 노이즈 제거를 위해 Rolling Quantile 도입 (Regime Adaptive)
+        # "최근 1년(252일) 동안 본 것 중에 상위 10%냐?"
         
-        # 존재하는 컬럼만 선택
-        valid_cols = [c for c in stress_candidates if c in signals_df.columns]
+        rolling_thresholds = signals_df.rolling(252).quantile(0.80) # 기준을 80%
+    
+        # 현재 값이 최근 1년 기준선을 넘었는가?
+        # 4. 개수 조건 강화: 지표 2개 -> 3개 이상 동시 폭발 시
+        stress_counts = (signals_df > rolling_thresholds).sum(axis=1)
+        all_stressed = stress_counts >= 3 # [TUNING] 2 -> 3
         
-        if valid_cols:
-            subset_df = signals_df[valid_cols]
-            
-            # 기준: 상위 20% (Risk On)
-            rolling_thresholds = subset_df.rolling(252).quantile(0.80) 
+        stress_groups = (all_stressed != all_stressed.shift()).cumsum()
         
-            # 현재 값이 최근 1년 기준선을 넘었는가?
-            # 4. 개수 조건: 5개 중 2개 이상 동시 폭발 시 (변수 5개로 줄었으므로 3->2로 조정)
-            stress_counts = (subset_df > rolling_thresholds).sum(axis=1)
-            all_stressed = stress_counts >= 2 # [TUNING] 2개 이상이면 위기
-            
-            stress_groups = (all_stressed != all_stressed.shift()).cumsum()
-            
-            # [추가] Duration에 Log를 씌워서 200일씩 쌓이는 거 방지 (De-powering)
-            raw_duration = all_stressed.groupby(stress_groups).cumcount() * all_stressed
-            path_features['sync_stress_duration'] = np.log1p(raw_duration)
-        else:
-            path_features['sync_stress_duration'] = 0.0
-            
+        # [추가] Duration에 Log를 씌워서 200일씩 쌓이는 거 방지 (De-powering)
+        raw_duration = all_stressed.groupby(stress_groups).cumcount() * all_stressed
+        path_features['sync_stress_duration'] = np.log1p(raw_duration)
+        
         print(f"[OK] 경로 변수: {len(path_features.columns)}개")
         return path_features
     
@@ -1012,124 +1006,149 @@ class StructuralRiskDetector2026:
         except Exception as e:
             print(f"[WARN] Net Liquidity timezone conversion error: {e}")
 
-        # ==============================================================================
-        # [NEW] 사모신용(Private Credit) 스트레스 - TCPC 중심
-        # 논리: "공모 하이일드(HYG)는 버티는데, 사모 대출(TCPC) 가격이 무너지면 구조적 위기다."
-        # ==============================================================================
-        print("   [INFO] 사모신용(TCPC) 데이터 로드 중...")
-        try:
-            tcpc_data = yf.download('TCPC', start=start_date, progress=False)
-            if isinstance(tcpc_data.columns, pd.MultiIndex):
-                tcpc_data.columns = tcpc_data.columns.get_level_values(0)
-            if tcpc_data.index.tz is not None: tcpc_data.index = tcpc_data.index.tz_localize(None)
-            
-            tcpc_price = tcpc_data['Close'] if 'Close' in tcpc_data.columns else tcpc_data.iloc[:, 0]
-            tcpc_price = tcpc_price.reindex(spy_close.index).ffill()
-            
-            # TCPC Drawdown (전고점 대비 하락폭) -> 양수 변환 (Stress 높을수록 큼)
-            roll_max = tcpc_price.rolling(252, min_periods=1).max()
-            tcpc_drawdown = (tcpc_price - roll_max) / roll_max
-            private_credit_signal = tcpc_drawdown * -1 # 양수화 (0~1)
-            
-            # 2012년 이전 데이터 부족 처리
-            private_credit_signal = private_credit_signal.fillna(0) # 0으로 채움 (Pre-2012 safe assumption)
-            
-            # TCPC Panic (급락)
-            tcpc_panic = (private_credit_signal > 0.2).astype(int) # -20% 이상 하락 시 패닉
-            
-            print(f"   [OK] Private Credit Signal 생성 완료 (Max Stress: {private_credit_signal.max():.2f})")
-            
-        except Exception as e:
-            print(f"[WARN] Private Credit(TCPC) 로드 실패: {e}")
-            private_credit_signal = pd.Series(0, index=spy_close.index)
-            tcpc_panic = pd.Series(0, index=spy_close.index)
-
-        # [NEW] Paper Alignment Features 계산 (Skew, Kurtosis, Correlation)
+        # [복구] HMM 국면 탐지
+        hmm_signal = self.get_market_regime_hmm(spy_df)
+        
+        # [NEW] Paper Alignment Features 계산
         paper_dfs = self.get_paper_features(spy_close, start_date)
         # Timezone 정리
         if paper_dfs.index.tz is not None: paper_dfs.index = paper_dfs.index.tz_localize(None)
 
-        # [NEW] Absorption Ratio 계산 (Systemic Risk)
+        # [NEW] Absorption Ratio 계산
         ar_dfs = self.get_absorption_ratio(start_date)
         if ar_dfs.index.tz is not None: ar_dfs.index = ar_dfs.index.tz_localize(None)
         
         # 인덱스 맞추기/reindex
         ar_dfs = ar_dfs.reindex(spy_close.index).ffill()
 
-        # [LOGIC] HMM 모듈 제거 -> 'Pure Macro Stress' 모드로 전환
-        print("[Logic] HMM 모듈 제거 -> 'Pure Macro Stress' 모드로 전환합니다.")
+
+        # ==============================================================================
+        # [NEW] 사모신용(Private Credit) 스트레스 - TCPC 중심
+        # 논리: "공모 하이일드(HYG)는 버티는데, 사모 대출(TCPC) 가격이 무너지면 구조적 위기다."
+        # ==============================================================================
+        print("   [INFO] 사모신용(TCPC) 데이터 로드 중...")
+        aux_tickers = ['HYG', 'TCPC']
+        aux_data = yf.download(aux_tickers, start=start_date, progress=False)['Close']
         
-        # Data Alignment
-        df_idx = spy_close.index
-        vol_signal = vol_signal.reindex(df_idx).ffill().fillna(0)
-        bond_signal = bond_signal.reindex(df_idx).ffill().fillna(0)
-        eco_signal = eco_signal.reindex(df_idx).ffill().fillna(0)
-        momentum_signal = momentum_signal.reindex(df_idx).ffill().fillna(0)
-        liquidity_signal = liquidity_signal.reindex(df_idx).ffill().fillna(0)
-        fx_carry_signal = fx_carry_signal.reindex(df_idx).ffill().fillna(0)
-        net_liq_signal = net_liq_signal.reindex(df_idx).ffill().fillna(0)
+        # 1. TCPC 괴리율 (Credit Divergence)
+        # HYG(시장 유동성 있음) 대비 TCPC(비유동성 자산)의 상대 강도
+        tcp_ratio = aux_data['TCPC'] / aux_data['HYG']
         
-        # 1. 트리거(Trigger) 정의
-        bond_panic = (bond_signal > 0.8).astype(int)
-        liq_drain = (net_liq_signal < -0.8).astype(int)
-        fx_panic = (fx_carry_signal > 0.8).astype(int)
-        vol_panic = (vol_signal > 1.0).astype(int)
+        # 2. Z-score 변환 (평균 회귀 분석)
+        tcp_stress_raw = (tcp_ratio - tcp_ratio.rolling(252).mean()) / tcp_ratio.rolling(252).std()
         
-        # 2. Bull/Bear Market 정의 (66일 이평선 기준)
-        spy_ma_mid = spy_close.rolling(66).mean()
-        is_bull_series = (spy_close > spy_ma_mid)
+        # 3. 신호 반전 (-1 곱하기, 수치가 높을수록 Panic)
+        private_credit_signal = tcp_stress_raw * -1
         
-        # 3. 압력 누적 루프 (Simple Accumulator)
+        # 인덱스 매칭
+        if private_credit_signal.index.tz is not None:
+             private_credit_signal.index = private_credit_signal.index.tz_localize(None)
+        
+        # [Fix] 데이터 Truncation 방지
+        # TCPC는 2012년 상장됨. 그 이전 데이터가 NaN이 되어 전체 데이터를 2013년 이후로 잘라버리는 문제 해결.
+        # AI 모델은 어차피 이 컬럼을 안 쓰므로(Drop함), 0으로 채워서 행 보존이 최우선.
+        private_credit_signal = private_credit_signal.reindex(spy_close.index).fillna(0)
+             
+        # 4. 트리거 설정 (Z-score 1.0 이상이면 발작)
+        tcpc_panic = (private_credit_signal > 1.0).astype(int)
+
+        # [NEW] 사장님의 "압력 밥솥" 로직 구현
+        # 원리: Overheated면 압력이 쌓이고(Risk 증가), Stress면 압력이 해소된다(Risk 감소/종료)
+        
+        # 1. 상태별 마스크 생성
+        # hmm_signal 인덱스를 spy_df 인덱스와 맞추기 위해 reindex 필요할 수 있음 (보통은 맞춰져 있음)
+        hmm_signal = hmm_signal.reindex(vol_signal.index).ffill().dropna()
+        
+        is_overheated = (hmm_signal == 1) # 과열 (경고등 켜야 함)
+        is_stress = (hmm_signal == 2)     # 스트레스 (위기 해소 중)
+        is_normal = (hmm_signal == 0)     # 평온
+        
+        # 2. '누적 압력(Accumulated Strain)' 지표 생성
+        # [수정] HMM Strain 계산 로직 고도화 (가속도 반영)
+        
         strain_list = []
         current_strain = 0
         
-        # Series 값 접근을 위한 numpy array 변환 (속도 향상)
-        bond_p_vals = bond_panic.values
-        liq_d_vals = liq_drain.values
-        fx_p_vals = fx_panic.values
-        vol_p_vals = vol_panic.values
-        is_bull_vals = is_bull_series.values
+        # [수정] HMM Strain 계산 로직 대수술 (Always-on Sensor)
         
-        for i in range(len(df_idx)):
-            # (2) 외부 충격 합산 (Macro Shock)
-            # 가중치는 유지 (유동성과 환율에 민감하게)
-            shock_score = (bond_p_vals[i] * 4) + \
-                          (fx_p_vals[i] * 5) + \
-                          (vol_p_vals[i] * 3) + \
-                          (liq_d_vals[i] * 4)
+        strain_list = []
+        current_strain = 0
+        
+        # 1. 외부 충격 감지 (Trigger)
+        # Threshold를 살짝 낮춰서(-0.8) 민감하게 반응하도록 함
+        bond_panic = (bond_signal > 0.8).astype(int)
+        liq_drain = (net_liq_signal < -0.8).astype(int)
+        # [NEW] 환율(FX) 트리거도 민감하게 (-0.8)
+        fx_panic = (fx_carry_signal < 0.8).astype(int)
+        # [NEW] 변동성 발작 추가 (사장님 의견 반영)
+        # VIX가 평소보다 튀면(Z-score > 1.0) 무조건 압력 채움
+        vol_panic = (vol_signal > 1.0).astype(int)
+        
+        # 인덱스 정렬 
+        bond_panic = bond_panic.reindex(hmm_signal.index).fillna(0)
+        liq_drain = liq_drain.reindex(hmm_signal.index).fillna(0)
+        fx_panic = fx_panic.reindex(hmm_signal.index).fillna(0)
+        vol_panic = vol_panic.reindex(hmm_signal.index).fillna(0)
+        tcpc_panic = tcpc_panic.reindex(hmm_signal.index).fillna(0)
+        
+        # [수정] 이동평균선 기간 변경 (50일 -> 66일)
+        # 논문의 '중기(Quarterly)' 기준인 66일 적용
+        spy_ma_mid = spy_close.rolling(66).mean()
+        
+        # 인덱스 정렬 확인
+        spy_ma_mid = spy_ma_mid.reindex(hmm_signal.index).ffill()
+        spy_close_aligned = spy_close.reindex(hmm_signal.index).ffill()
+
+        for i in range(len(hmm_signal)):
+            # 추세선 비교도 66일선 사용
+            trend_line = spy_ma_mid.iloc[i]
+            current_price = spy_close_aligned.iloc[i]
             
-            is_bull_market = is_bull_vals[i]
+            # [수정] 외부 충격 가중치 재조정 (사모신용 부재 보완)
+            # 사모신용(TCPC)이 빠졌으므로, 유동성(Liquidity)과 채권(Bond) 가중치를 높임
+            # bond: 3 -> 4, liq: 2 -> 4 (현금 마르는 것에 더 민감하게)
             
-            # (3) 압력 조절 로직 (Pressure Control)
-            if is_bull_market:
-                # 상승장에서는 악재가 있어도 시장이 무시함 -> 압력 빠른 해소
-                # 단, 충격이 너무 크면(shock > 5) 약간은 남겨둠
-                if shock_score > 5:
-                    current_strain = (current_strain + shock_score) * 0.8
-                else:
-                    current_strain = current_strain * 0.9  # 빠르게 0으로 수렴
+            external_shock = (bond_panic.iloc[i] * 4) + \
+                             (fx_panic.iloc[i] * 5) + \
+                             (tcpc_panic.iloc[i] * 0) + \
+                             (vol_panic.iloc[i] * 3) + \
+                             (liq_drain.iloc[i] * 4)
+            
+            if is_stress.iloc[i]:
+                # [핵심 수정 1] 폭락 발생(Stress) -> 압력 즉시 소멸
+                # 기존: -2씩 차감 (너무 느림) -> 수정: 0으로 초기화 (폭발했으니까!)
+                current_strain = 0
+                
+            elif is_overheated.iloc[i]:
+                # 과열 상태 + 하락 추세 -> 압력 축적
+                current_strain += (1 + external_shock)
+                
             else:
-                # 하락장(Bear) + 충격 발생 = 위험 급증
-                if shock_score > 0:
-                    current_strain += (1 + shock_score)
+                # Normal 상태 + 하락 추세 (66일 이평선 아래 확인)
+                # 외부 충격이 있을 때만 압력 증가
+                # [수정] Paradox of Instability (불안정의 역설)
+                # 상승장(Price > Trend)이라도, 매크로 충격(Bond, Liquidity)이 강하면 압력 축적
+                # 기존: (current_price < trend_line) and (external_shock > 0)
+                # 변경: (external_shock > 0.5) OR ((current_price < trend_line) and (external_shock > 0))
+                
+                # 강한 외부 충격이 있거나(0.5 초과), 하락 추세에서 충격이 있으면 압력 증가
+                if (external_shock > 0.5) or ((current_price < trend_line) and (external_shock > 0)):
+                    current_strain += external_shock
                 else:
-                    # 하락장이지만 별다른 충격은 없음 -> 천천히 자연 소멸
-                    current_strain = max(0, current_strain - 0.5)
+                    # 아무 일 없으면 자연 냉각
+                    current_strain = max(0, current_strain - 1)
             
             strain_list.append(current_strain)
-
-        # 4. 결과 저장 (이름은 호환성을 위해 hmm_strain 유지하되, 내용은 Macro Strain임)
+        #로그 변환
         log_strain_list = np.log1p(strain_list)
-        accumulated_strain = pd.Series(log_strain_list, index=df_idx, name='hmm_strain')
+        # Series로 변환
+        accumulated_strain = pd.Series(log_strain_list, index=hmm_signal.index, name='hmm_strain')
         
-        # [NEW] 압력 폭발 지표 (Trigger)
+        # [NEW] 압력 폭발 지표 (Trigger) - 위에서 정의한 변수 사용
+        # 압력이 찬 상태에서 돈이 빠지는가?
         strain_x_drain = accumulated_strain * liq_drain
         strain_x_drain.name = 'strain_x_drain'
         
-        # [Compatibility] hmm_overheated Mocking (상승장 = Overheated Potential)
-        is_overheated = is_bull_series.astype(int)
-
-        # DataFrame 통합
         signals = pd.DataFrame({
             'volatility': vol_signal,
             'bond_stress': bond_signal,
@@ -1138,31 +1157,47 @@ class StructuralRiskDetector2026:
             'liquidity': liquidity_signal,
             'fx_carry': fx_carry_signal,
             'net_liquidity': net_liq_signal,
+            # [NEW] 사모신용(Private Credit) 신호 추가
+            # 값이 높을수록 위험
             'private_credit': private_credit_signal,
             
-            # [NEW] Logic-based Status
-            'hmm_overheated': is_overheated, 
-            'hmm_strain': accumulated_strain,            
-            'hmm_strain_vel': accumulated_strain.diff().fillna(0), 
-            'strain_x_drain': strain_x_drain,
+            # [NEW Features]
+            'hmm_overheated': is_overheated.astype(int), 
+            'hmm_strain': accumulated_strain.astype(float),            
+            'hmm_strain_vel': accumulated_strain.diff().fillna(0).astype(float), 
+            'strain_x_drain': strain_x_drain.astype(float),
 
             # [AMPLIFIER] Context Interaction Features (Pressure Cooker Logic)
-            'context_bond_stress': (bond_signal * (1 + accumulated_strain) * bond_panic).astype(float),
-            'context_liquidity_drain': ((net_liq_signal * -1) * (1 + accumulated_strain) * liq_drain).astype(float),
+            # [GATE] "확실한 충격(Impact) 아니면 곱하지 마라"
+            # Z-score 1.0 미만의 잡음은 0으로 처리 (Noise Gate)
+            
+            # [수정] 0의 함정 탈출 (Hybrid Trigger)
+            # Strain이 0이어도, Signal 자체가 강력하면(Gate 통과) 경보 울림: Signal * (1 + Strain)
+            
+            'context_bond_stress': (bond_signal * (1 + accumulated_strain) * (bond_signal > 1.0).astype(int)).astype(float),
+            'context_liquidity_drain': ((net_liq_signal * -1) * (1 + accumulated_strain) * (net_liq_signal < -1.0).astype(int)).astype(float),
             'context_momentum_crash': ((momentum_signal * -1) * (1 + accumulated_strain)).astype(float),
+            
+            # [NEW] 환율(FX) 트리거 (Carry 청산 쇼크)
             'context_fx_shock': ((fx_carry_signal * 1) * (1 + accumulated_strain) * fx_panic).astype(float),
+            
+            # [NEW] 변동성 (Volatility) 트리거 추가
+            # VIX가 튀면 Strain이 없어도 경보 울림
             'context_vol_shock': (vol_signal * (1 + accumulated_strain) * vol_panic).astype(float),
+            
+            # [NEW] 사모신용 충격 트리거 (Hybrid Trigger)
+            # 압력(Strain)이 0이어도, TCPC가 급락하면 그 자체로 '신용 사건'임
             'context_private_credit': (private_credit_signal * (1 + accumulated_strain) * tcpc_panic).astype(float),
             
-            # [NEW] Paper Features
+            # [NEW] Paper Features (Skew, Kurtosis, Correlation)
             'skew_66': paper_dfs['ret_skew_66'],
             'kurt_66': paper_dfs['ret_kurt_66'],
-            'sk_252': paper_dfs['ret_skew_252'],
-            'kt_252': paper_dfs['ret_kurt_252'],
+            'sk_252': paper_dfs['ret_skew_252'], # Long-term Skew
+            'kt_252': paper_dfs['ret_kurt_252'], # Long-term Kurtosis
             'corr_bond': paper_dfs['corr_spy_tlt'],
             'corr_vix': paper_dfs['corr_spy_vix'],
             
-            # [NEW] Absorption Ratio
+            # [NEW] Absorption Ratio (Systemic Risk)
             'absorb_ratio': ar_dfs['absorption_ratio'],
             'absorb_delta': ar_dfs['absorption_ratio_delta'],
             
