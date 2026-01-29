@@ -1229,17 +1229,19 @@ class StructuralRiskDetector2026:
         y = df_labeled['crash']
         
         # ======================================================================
-        # [NEW] 샘플 가중치(Sample Weight) 생성
+        # [NEW] 샘플 가중치(Sample Weight) 생성 - Crisis Focus
         # ======================================================================
         # 1) 기본 가중치 1.0 설정
         sample_weights = pd.Series(1.0, index=y.index)
         
-        # 2) 2002~2007년 구간 3배(3.0) 부스팅
-        # "이 기간은 현재와 비슷하니 더 중요하게 봐라!"
-        boost_mask = (y.index >= '2002-01-01') & (y.index <= '2007-12-31')
+        # 2) 위기 구간 집중 학습 (Crisis Boosting)
+        # 2000년(닷컴), 2008년(금융위기), 2020년(코로나) 위기 구간만 3배 부스팅
+        # "평온한 상승장(2002-2007)보다는, 위기가 터지는 순간을 외워라!"
+        crisis_years = [2000, 2001, 2008, 2009, 2020]
+        boost_mask = y.index.year.isin(crisis_years)
         sample_weights[boost_mask] = 3.0
         
-        print(f"   >>> 2002~2007 구간 가중치 300% 적용 완료. (해당 데이터 수: {boost_mask.sum()}일)")
+        print(f"   >>> Crisis Boosting (2000, 2008, 2020) 적용 완료. (해당 데이터 수: {boost_mask.sum()}일)")
 
         
         # 2. 날짜 기준 분할 (Validation용)
