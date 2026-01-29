@@ -1199,70 +1199,92 @@ class StructuralRiskDetector2026:
         return df
         
     
-    def train_model(self, df):
+    def train_model(self, df, split_date='2024-01-01'):
         """
         [논문 기반 최종 수정] Ensemble Model (RF + XGBoost)
         - Sheikh Sadik (2024) 논문의 Hyperparameters 적용
         - 두 모델의 장점을 결합한 Soft Voting Ensemble 구현
+        - [수정] Hold-out Validation (split_date 기준)
         """
         from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
         from sklearn.ensemble import RandomForestClassifier, VotingClassifier
         from xgboost import XGBClassifier # pip install xgboost 필요
-        from sklearn.metrics import f1_score
+        from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score, confusion_matrix, roc_auc_score
         
-        # 1. 데이터 준비
-        X = df.drop(columns=['crash'])
-        y = df['crash']
+        print(f"\n{'='*70}")
+        print(f"[AI] 모델 학습 시작 ({split_date} 기준 Hold-out 검증)")
         
-        # 2. 시계열 교차 검증 (4-Fold)
-        tscv = TimeSeriesSplit(n_splits=4)
+        # 1. 데이터 준비 (라벨 있는 것만)
+        df_labeled = df.dropna(subset=['crash']).sort_index()
+        
+        X = df_labeled.drop(columns=['crash'])
+        y = df_labeled['crash']
+        
+        # 2. 날짜 기준 분할
+        split_ts = pd.Timestamp(split_date)
+        mask_train = X.index < split_ts
+        mask_test = X.index >= split_ts
+        
+        X_train, X_test = X[mask_train], X[mask_test]
+        y_train, y_test = y[mask_train], y[mask_test]
+        
+        # 데이터셋 정보 출력
+        print(f"   학습 데이터: {len(X_train)}개 (~{X_train.index[-1].date()})")
+        print(f"   검증 데이터: {len(X_test)}개 ({X_test.index[0].date()}~)")
+        print(f"   학습셋 Crash 비율: {y_train.mean():.1%}")
+        
+        if len(X_test) == 0:
+            print("[WARN] 검증 데이터가 없습니다! 최근 데이터를 포함하거나 split_date를 조정하세요.")
+        
+        # 3. 시계열 교차 검증 (학습 데이터 내부에서 수행)
+        tscv = TimeSeriesSplit(n_splits=3) # 4 -> 3으로 조정 (데이터 양 고려)
         
         # ======================================================================
-        # [Model 1] Random Forest 튜닝 (안정성)
+        # [Model 1] Random Forest
         # ======================================================================
         rf_params = {
-            'n_estimators': [100, 200, 500],
-            'max_features': [0.1, 0.3, 0.5, 'sqrt'],
-            'max_depth': [10, 20, 30, None],
-            'min_samples_leaf': [0.001, 0.01, 0.05],
+            'n_estimators': [100, 200],
+            'max_features': [0.3, 'sqrt'], # 0.5 제거 (과적합 방지)
+            'max_depth': [10, 20, None],
+            'min_samples_leaf': [0.01, 0.05],
             'bootstrap': [True],
             'class_weight': ['balanced']
         }
         
         print("\n[Training] 1. Random Forest 최적화 중...")
         rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
-        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=5, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
-        rf_search.fit(X, y)
+        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
+        rf_search.fit(X_train, y_train)
         best_rf = rf_search.best_estimator_
         
         # ======================================================================
-        # [Model 2] XGBoost 튜닝 (정확도)
-        # 논문 Hyperparameters: LR [0.01~0.3], Child Weight [0.5~20]
+        # [Model 2] XGBoost
         # ======================================================================
+        # Class Weight 계산 (Scale Pos Weight)
+        neg, pos = np.bincount(y_train)
+        scale_pos_weight = neg / pos if pos > 0 else 1.0
+        
         xgb_params = {
             'n_estimators': [100, 200, 500],
-            'learning_rate': [0.01, 0.05, 0.1, 0.2],  # 학습 속도
-            'max_depth': [3, 5, 7, 10],               # 깊이
-            'min_child_weight': [1, 3, 5, 10],        # 관측치 가중치 합
-            'subsample': [0.6, 0.8, 1.0],             # 데이터 샘플링 비율
-            'colsample_bytree': [0.6, 0.8, 1.0],      # 컬럼 샘플링 비율
-            'scale_pos_weight': [1, 5, 10]            # 불균형 데이터 가중치 (Class Weight와 유사)
+            'learning_rate': [0.01, 0.05, 0.1],
+            'max_depth': [3, 5, 7],
+            'min_child_weight': [1, 3, 5],
+            'subsample': [0.6, 0.8],
+            'colsample_bytree': [0.6, 0.8],
+            'scale_pos_weight': [scale_pos_weight, scale_pos_weight * 2] # 가중치 탐색
         }
         
         print("[Training] 2. XGBoost 최적화 중...")
         xgb_base = XGBClassifier(eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
-        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=5, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
-        xgb_search.fit(X, y)
+        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
+        xgb_search.fit(X_train, y_train)
         best_xgb = xgb_search.best_estimator_
         
         # ======================================================================
-        # [Final] Voting Classifier (앙상블)
-        # 두 모델의 확률을 평균내어 판단 (Soft Voting)
+        # [Final] Voting Classifier
         # ======================================================================
         print("[Training] 3. 앙상블(Voting) 모델 통합 중...")
         
-        # weights=[1, 1] : 두 모델의 의견을 50:50으로 반영
-        # 만약 XGBoost를 더 믿고 싶다면 weights=[1, 2]로 설정 가능
         voting_clf = VotingClassifier(
             estimators=[('rf', best_rf), ('xgb', best_xgb)],
             voting='soft',
@@ -1270,18 +1292,75 @@ class StructuralRiskDetector2026:
             n_jobs=-1
         )
         
-        voting_clf.fit(X, y)
+        # 전체 학습 데이터로 재학습
+        voting_clf.fit(X_train, y_train)
         
         print(f"   >>> Random Forest Best F1: {rf_search.best_score_:.4f}")
         print(f"   >>> XGBoost Best F1: {xgb_search.best_score_:.4f}")
         
-        # 논문 설정을 따를 때 Threshold는 보통 0.5가 기준이 되지만,
-        # 실전 감각을 반영하여 약간 보수적인 0.35 추천
+        # 4. 검증 및 결과 저장
         optimal_threshold = 0.35
-        
         self.model = voting_clf
         self.threshold = optimal_threshold
         
+        # 검증 데이터 평가
+        if len(X_test) > 0:
+            y_pred_proba = voting_clf.predict_proba(X_test)[:, 1]
+            # 스무딩 (옵션)
+            y_pred_proba = pd.Series(y_pred_proba).ewm(span=3).mean().values
+            
+            y_pred = (y_pred_proba >= optimal_threshold).astype(int)
+            
+            auc = roc_auc_score(y_test, y_pred_proba)
+            
+            self.backtest_results = {
+                'auc': auc,
+                'recall': recall_score(y_test, y_pred),
+                'precision': precision_score(y_test, y_pred, zero_division=0),
+                'f1': f1_score(y_test, y_pred, zero_division=0),
+                'accuracy': accuracy_score(y_test, y_pred),
+                'confusion_matrix': confusion_matrix(y_test, y_pred),
+                'threshold': optimal_threshold,
+                'y_test': y_test,
+                'y_pred': y_pred,
+                'y_pred_proba': y_pred_proba,
+                'X_test': X_test,
+                'split_date': split_date
+            }
+            
+            # 전체 데이터 예측 (시각화용)
+            y_pred_proba_full = voting_clf.predict_proba(X)[:, 1]
+            y_pred_proba_full = pd.Series(y_pred_proba_full).ewm(span=3).mean().values # 스무딩
+            
+            # Feature Importances (Voting은 직접 제공 안하므로 RF 기준 근사 or 각자 평균)
+            # 여기서는 편의상 RF의 중요도를 사용하거나 XGB의 중요도를 사용
+            # VotingClassifier는 feature_importances_ 속성이 없으므로 best_rf 사용 시각화
+            # 또는 두 모델 평균
+            try:
+                # RF importance
+                rf_imp = best_rf.feature_importances_
+                # XGB importance
+                xgb_imp = best_xgb.feature_importances_
+                avg_imp = (rf_imp + xgb_imp) / 2
+                
+                importances = pd.DataFrame({
+                    'feature': X.columns,
+                    'importance': avg_imp
+                }).sort_values('importance', ascending=False).head(15)
+                
+                self.backtest_results['importances'] = importances
+            except:
+                pass
+
+            self.backtest_results.update({
+                'X_full': X,
+                'y_full': y,
+                'y_pred_proba_full': y_pred_proba_full,
+                'test_start_date': X_test.index[0]
+            })
+            
+            print(f"[EVAL] 검증 완료. AUC: {auc:.4f}")
+
         return voting_clf
     
     # ============================================

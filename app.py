@@ -63,9 +63,8 @@ def run_training_v48(_detector, df):
     with st.spinner('모델 학습 및 백테스트 중...'):
         # [AUTO] 검증 구간 자동 설정 (최근 1년)
         # split_date = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
-        # 하지만 안정성을 위해 고정된 날짜 사용 권장 (2024-01-01)
-        # [TUNING] Golden Ratio Tuning 시에는 더 긴 검증 구간이 필요할 수 있음
-        _detector.train_model(df, split_date='2024-01-01')
+        # 하지만 안정성을 위해 고정된 날짜 사용 권장 (사용자 요청: 2023-01-01부터 검증)
+        _detector.train_model(df, split_date='2023-01-01')
     return _detector
 
 # 모델 및 데이터 로드
