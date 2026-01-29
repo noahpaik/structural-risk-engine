@@ -1215,7 +1215,7 @@ class StructuralRiskDetector2026:
         else:
             # 1. 가중치 복구 (Recall 50% 사수용)
             # 폭락을 놓치는 건 15배 더 나쁘다. (20은 과하고 5는 약했음)
-            pos_weight = 15.0
+            pos_weight = 18.0
             print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
 
         # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
@@ -1225,7 +1225,7 @@ class StructuralRiskDetector2026:
         # XGBoost 학습
         self.model = XGBClassifier(
             n_estimators=500,
-            learning_rate=0.03,      # 0.05 -> 0.03 (다시 조금 침착하게)
+            learning_rate=0.04,      # 0.05 -> 0.03 (다시 조금 침착하게)
             max_depth=6,             # 5 -> 6 (복잡한 곱셈 관계 이해하도록 깊이 증가)
             subsample=0.7,
             colsample_bytree=0.7,
@@ -1276,7 +1276,7 @@ class StructuralRiskDetector2026:
         
         # [수정] 오경보를 줄이기 위해 다시 상향
         # [TUNING] 0.45 -> 0.42 (신호가 강해졌으므로 살짝 낮춰도 됨)
-        optimal_threshold = 0.42
+        optimal_threshold = 0.35
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
