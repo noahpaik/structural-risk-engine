@@ -902,9 +902,10 @@ class StructuralRiskDetector2026:
                     current_strain = max(0, current_strain - 1)
             
             strain_list.append(current_strain)
-            
+        #로그 변환
+        log_strain_list = np.log1p(strain_list)
         # Series로 변환
-        accumulated_strain = pd.Series(strain_list, index=hmm_signal.index, name='hmm_strain')
+        accumulated_strain = pd.Series(log_strain_list, index=hmm_signal.index, name='hmm_strain')
         
         # [NEW] 압력 폭발 지표 (Trigger) - 위에서 정의한 변수 사용
         # 압력이 찬 상태에서 돈이 빠지는가?
