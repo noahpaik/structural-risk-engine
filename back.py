@@ -1265,45 +1265,49 @@ class StructuralRiskDetector2026:
         neg, pos = np.bincount(y_train)
         scale_pos_weight_val = (neg / pos) * 10.0 
         
-        tscv = TimeSeriesSplit(n_splits=3)
+        # [Paper Alignment] CV: Expanding Window, 4 Folds
+        tscv = TimeSeriesSplit(n_splits=4)
         
         # ======================================================================
-        # [Model 1] Random Forest
+        # [Model 1] Random Forest (Paper Specs)
         # ======================================================================
+        # Paper: Max Features [0.05, 0.1, 0.3, 0.5], Min Samples Leaf [0.001...0.05]
         rf_params = {
             'n_estimators': [200, 300],
             'max_depth': [10, 20],
-            'min_samples_leaf': [0.01, 0.05], 
-            'max_features': ['sqrt'],
+            'min_samples_leaf': [0.001, 0.01, 0.05], 
+            'max_features': ['sqrt', 0.3, 0.5], # Paper style ratios
             'class_weight': ['balanced_subsample']
         }
         
-        print("[Training] 1. Random Forest 최적화 중...")
+        print("[Training] 1. Random Forest 최적화 중... (Sheikh Sadik Config)")
         rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
         # Recall 최우선 scoring
-        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=3, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
+        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=5, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
         rf_search.fit(X_train, y_train, sample_weight=weights_train) 
         best_rf = rf_search.best_estimator_
         
         # ======================================================================
-        # [Model 2] XGBoost (가중치 10배)
+        # [Model 2] XGBoost (Paper Specs + 10x Weight)
         # ======================================================================
+        # Paper: LR [0.01...0.3], Min Child Weight [0.5...20]
         xgb_params = {
-            'n_estimators': [100, 200],
-            'learning_rate': [0.05, 0.1],
-            'max_depth': [3, 5],
+            'n_estimators': [100, 200, 300],
+            'learning_rate': [0.01, 0.05, 0.1, 0.2],
+            'max_depth': [3, 5, 7],
             'subsample': [0.8, 1.0],
-            'scale_pos_weight': [scale_pos_weight_val] # 10배 가중치
+            'min_child_weight': [1, 3, 5, 10], # Paper spec
+            'scale_pos_weight': [scale_pos_weight_val] # 10배 가중치 유지
         }
         
-        print("[Training] 2. XGBoost 최적화 중...")
+        print("[Training] 2. XGBoost 최적화 중... (Sheikh Sadik Config)")
         xgb_base = XGBClassifier(eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
-        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=3, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
+        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=5, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
         xgb_search.fit(X_train, y_train, sample_weight=weights_train)
         best_xgb = xgb_search.best_estimator_
         
         # ======================================================================
-        # [Model 3] Voting
+        # [Model 3] Voting (Soft Voting)
         # ======================================================================
         print("[Training] 3. 앙상블 통합 중...")
         voting_clf = VotingClassifier(
