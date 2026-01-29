@@ -482,51 +482,38 @@ class StructuralRiskDetector2026:
     
     def get_fx_carry_risk(self):
         """
-        엔 캐리 트레이드 청산 위험 감지
-        원리: USD/JPY 급락(엔화 강세) + 주가 하락(SPY↓) = 캐리 청산
+        [수정] FX Volatility Risk (환율 변동성 위기)
+        기존: 엔화 강세 + 주가 하락 (Carry Trade Unwind) -> 이벤트성
+        변경: 달러 인덱스 & 엔화의 '변동성(Volatility)' 급등 -> 구조적 위기 전조
         """
-        print("[INFO] FX 캐리 위험 계산 중...")
+        # 1. 데이터 다운로드
+        # DX-Y.NYB: 달러 인덱스 (글로벌 유동성의 척도)
+        # JPY=X: 엔/달러 환율 (아시아/캐리 트레이드 척도)
+        tickers = ['DX-Y.NYB', 'JPY=X']
+        print(f"   [INFO] FX 변동성 데이터 로드 중... ({tickers})")
         
-        try:
-            # JPY=X: USD/JPY 환율 (1996년~)
-            # 환율 하락 = 엔화 가치 상승 = 캐리 청산
-            usdjpy_df = yf.download('JPY=X', period='max', progress=False)
-            spy_df = yf.download('SPY', period='max', progress=False)
-            
-            if isinstance(usdjpy_df.columns, pd.MultiIndex):
-                usdjpy_df.columns = usdjpy_df.columns.get_level_values(0)
-            if isinstance(spy_df.columns, pd.MultiIndex):
-                spy_df.columns = spy_df.columns.get_level_values(0)
-            
-            usdjpy_df.index = usdjpy_df.index.tz_localize(None)
-            spy_df.index = spy_df.index.tz_localize(None)
-            
-            usdjpy_close = usdjpy_df['Close']
-            spy_close = spy_df['Close']
-            
-            # 1. 환율 변동성 (20일) - USD/JPY
-            fx_vol = usdjpy_close.pct_change().rolling(20).std()
-            fx_vol_threshold = fx_vol.rolling(252).quantile(0.90)
-            
-            # 2. 상관관계 (20일 rolling)
-            # 캐리 청산 시: 엔화 급등(USD/JPY 하락, 음수) vs SPY 하락(음수) → 양의 상관관계
-            usdjpy_returns = usdjpy_close.pct_change()
-            spy_returns = spy_close.pct_change()
-            corr = usdjpy_returns.rolling(20).corr(spy_returns)
-            
-            # 3. 캐리 청산 신호: 환율 변동성 급증 + 동조 하락(양의 상관관계)
-            # 평소엔 상관관계 낮음, 위기 시 둘 다 하락 → corr > 0.3
-            carry_unwind = ((fx_vol > fx_vol_threshold) & (corr > 0.3)).astype(float)
-            
-            # 정규화 (0을 유지하면서)
-            carry_unwind_norm = (carry_unwind - carry_unwind.mean()) / (carry_unwind.std() + 1e-9)
-            
-            print(f"[OK] FX 캐리 데이터: {len(carry_unwind_norm)} 포인트")
-            return carry_unwind_norm
-            
-        except Exception as e:
-            print(f"[ERROR] FX 캐리 계산 오류: {e}")
-            return pd.Series()
+        fx_data = yf.download(tickers, start=self.start_date, progress=False)['Close']
+        fx_data = fx_data.ffill().dropna()
+
+        # 2. 변동성(Volatility) 계산
+        # 20일(약 한 달) 간의 표준편차를 구해서, 시장이 얼마나 불안한지 측정
+        # 수치가 클수록 -> 환율이 널뛰기한다 -> 위험하다
+        dxy_vol = fx_data['DX-Y.NYB'].pct_change().rolling(20).std()
+        jpy_vol = fx_data['JPY=X'].pct_change().rolling(20).std()
+
+        # 3. 통합 변동성 지표 (FX VIX)
+        # 달러 변동성과 엔화 변동성의 평균을 사용
+        fx_vol_index = (dxy_vol + jpy_vol) / 2
+        
+        # 4. Z-score 변환 (평소보다 얼마나 더 불안한가?)
+        # 최근 1년(252일) 평균 대비 현재 변동성의 위치
+        fx_vol_z = (fx_vol_index - fx_vol_index.rolling(252).mean()) / fx_vol_index.rolling(252).std()
+        
+        # [중요] 부호 설정
+        # 변동성이 클수록(Z-score가 높을수록) 위험하므로, 양수(+)가 위험 신호입니다.
+        # (기존 로직은 수익률 기반이라 음수가 위험이었지만, 지금은 양수가 위험)
+        
+        return fx_vol_z.dropna()
     
     # ============================================
     # LAYER 3.95: Net Liquidity (Daily Tracking)
@@ -857,7 +844,7 @@ class StructuralRiskDetector2026:
         bond_panic = (bond_signal > 0.8).astype(int)
         liq_drain = (net_liq_signal < -0.8).astype(int)
         # [NEW] 환율(FX) 트리거도 민감하게 (-0.8)
-        fx_panic = (fx_carry_signal < -0.8).astype(int)
+        fx_panic = (fx_carry_signal < 0.8).astype(int)
         # [NEW] 변동성 발작 추가 (사장님 의견 반영)
         # VIX가 평소보다 튀면(Z-score > 1.0) 무조건 압력 채움
         vol_panic = (vol_signal > 1.0).astype(int)
@@ -876,7 +863,7 @@ class StructuralRiskDetector2026:
             # [수정] 가속도 공식: 변동성(Vol)이 튀면 압력을 3배로 빨리 채움
             # [수정] 사모신용(TCPC)이 흔들리면 뇌관 건드린 것임 -> 가중치 4
             external_shock = (bond_panic.iloc[i] * 3) + \
-                             (fx_panic.iloc[i] * 5) + \
+                             (fx_panic.iloc[i] * 3) + \
                              (tcpc_panic.iloc[i] * 4) + \
                              (vol_panic.iloc[i] * 3) + \
                              (liq_drain.iloc[i] * 2)
@@ -942,7 +929,7 @@ class StructuralRiskDetector2026:
             'context_momentum_crash': ((momentum_signal * -1) * (1 + accumulated_strain)).astype(float),
             
             # [NEW] 환율(FX) 트리거 (Carry 청산 쇼크)
-            'context_fx_shock': ((fx_carry_signal * -1) * (1 + accumulated_strain) * fx_panic).astype(float),
+            'context_fx_shock': ((fx_carry_signal * 1) * (1 + accumulated_strain) * fx_panic).astype(float),
             
             # [NEW] 변동성 (Volatility) 트리거 추가
             # VIX가 튀면 Strain이 없어도 경보 울림
