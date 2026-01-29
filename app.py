@@ -112,12 +112,91 @@ page = st.sidebar.radio(
 if page == "🏠 Home - 현재 위험":
     st.title("🛡️ Structural Risk Engine (Dual-Core)")
     
-    # [NEW] 탭 분리
-    tab1, tab2 = st.tabs(["🚀 메인: 폭락 감지 모델", "🔒 서브: 사모신용(Private Credit)"])
+    # [NEW] 탭 분리 (About 페이지 추가)
+    tab1, tab2, tab3 = st.tabs(["🚀 메인: 폭락 감지 모델", "🔒 서브: 사모신용(Private Credit)", "📖 모델 설명서 (About)"])
     
     # ==========================================================================
-    # [TAB 1] 기존 메인 대시보드 (AI 예측)
+    # [TAB 3] 모델 설명서 (About)
     # ==========================================================================
+    with tab3:
+        st.header("🧠 Structural Risk Engine (Sheikh Sadik 2024 기반)")
+        st.markdown("### \"시장은 가장 고요할 때 붕괴한다.\"")
+        
+        st.info("""
+        **이 모델은 단순한 기술적 분석 도구가 아닙니다.**  
+        금융시장의 **'구조적 취약성(Structural Fragility)'**을 탐지하여, 
+        모두가 안심하는 상승장 속에서 **시스템 붕괴의 전조(Precursors)**를 찾아내는 데 특화되어 있습니다.
+        """)
+        
+        st.markdown("---")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("1. 🌪️ 불안정성의 역설 (Paradox of Instability)")
+            st.write("""
+            > *"Stability breeds Instability." - Hyman Minsky*
+            
+            기존 모델들은 **변동성(Volatility)**이 낮으면 '안전하다'고 판단합니다. 
+            하지만 이 모델은 다릅니다. **낮은 변동성이 오래 지속되면**, 
+            투자자들은 과도한 레버리지를 쓰게 되고, 시스템은 오히려 **'살얼음판(Fragile)'**이 됩니다.
+            
+            이 모델은 **Absorption Ratio(흡수 비율)**와 **Skewness(비대칭성)**를 통해 
+            이 숨겨진 위험을 감지합니다.
+            """)
+            
+            st.subheader("3. 🧲 흡수 비율 (Absorption Ratio)")
+            st.write("""
+            시장이 정상일 때, 주식/채권/원자재는 각자 따로 움직입니다.
+            하지만 위기가 다가오면, 모든 자산이 **하나의 거대한 요인(공포)**에 의해 
+            **동조화(Synchronization)**되기 시작합니다.
+            
+            이 비율이 급등하면, 사소한 충격에도 시스템 전체가 무너질 수 있습니다.
+            """)
+
+        with col2:
+            st.subheader("2. 🏗️ 구조적 HMM (Structural HMM)")
+            st.write("""
+            단순히 가격이 오르고 내리는 것을 넘어, **'시장 구조'**를 3단계로 진단합니다.
+            
+            - **🟢 Normal (안정)**: 건전한 상승장. 편안하게 투자하세요.
+            - **🟠 Fragile (살얼음판)**: 가격은 오르지만, 내부적으로 **Skew가 깨지고(하락 징후)** 자산 간 **동조화**가 심해진 상태. **가장 위험한 구간**입니다.
+            - **🔴 Stress (붕괴)**: 이미 위기가 터진 상태. 변동성이 폭발합니다.
+            """)
+            
+            st.subheader("4. 🔬 이중 필터 변수 선택 (Double Filter)")
+            st.write("""
+            수만 개의 데이터 중 '진짜 신호'만 걸러내기 위해 두 번 거릅니다.
+            1.  **Point Biserial**: 선형적인 상관관계가 뚜렷한가?
+            2.  **Mutual Information**: 비선형적인 정보량(Entropy)이 높은가?
+            
+            이 둘의 **교집합(Intersection)**에 해당하는 상위 50% 지표만 사용하여, 
+            가짜 신호(Noise)에 속지 않습니다.
+            """)
+            
+        st.markdown("---")
+        st.subheader("🛠️ Model Architecture")
+        st.code("""
+        [Input Data] 
+          ├── Market Prices (SPY, TLT, VIX)
+          ├── Macro Indicators (Unemployment, Yield Curve)
+          └── Liquidity Metircs (Net Liquidity, FX Carry)
+              ⬇️
+        [Feature Engineering]
+          ├── Structural Features (Skewness, Kurtosis)
+          ├── Systemic Risk (Absorption Ratio, Correlation)
+          └── HMM Regime Detection (Vol + Skew + Corr)
+              ⬇️
+        [Feature Selection]
+          🔍 Double Filter (Point Biserial ∩ Mutual Info)
+              ⬇️
+        [Ensemble Model]
+          🤖 Random Forest (Bagging) + XGBoost (Boosting)
+          ⚖️ Voting Classifier (Soft Voting)
+              ⬇️
+        [Prediction]
+          🚨 Crash Probability (0 ~ 100%)
+        """, language='text')
     with tab1:
         st.subheader("📉 Market Crash Probability (AI Model)")
         
