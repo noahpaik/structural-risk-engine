@@ -967,8 +967,13 @@ class StructuralRiskDetector2026:
             else:
                 # Normal 상태 + 하락 추세 (66일 이평선 아래 확인)
                 # 외부 충격이 있을 때만 압력 증가
-                # [논문 조건] Normal Regime이어도, 추세가 꺾이고(MA66 하회) 충격이 오면 압력 축적
-                if (current_price < trend_line) and (external_shock > 0):
+                # [수정] Paradox of Instability (불안정의 역설)
+                # 상승장(Price > Trend)이라도, 매크로 충격(Bond, Liquidity)이 강하면 압력 축적
+                # 기존: (current_price < trend_line) and (external_shock > 0)
+                # 변경: (external_shock > 0.5) OR ((current_price < trend_line) and (external_shock > 0))
+                
+                # 강한 외부 충격이 있거나(0.5 초과), 하락 추세에서 충격이 있으면 압력 증가
+                if (external_shock > 0.5) or ((current_price < trend_line) and (external_shock > 0)):
                     current_strain += external_shock
                 else:
                     # 아무 일 없으면 자연 냉각
@@ -1333,8 +1338,8 @@ class StructuralRiskDetector2026:
                 print(f"   >>> 예상 Precision: {precisions[best_idx]*100:.1f}%")
                 break
         else:
-            print("   >>> [WARN] 목표 Recall 달성 실패. 안전값 0.10 적용.")
-            optimal_threshold = 0.10
+            print("   >>> [WARN] 목표 Recall 달성 실패. 안전값 0.02 적용 (Paranoid Mode).")
+            optimal_threshold = 0.02
             
         self.model = voting_clf
         self.threshold = optimal_threshold
