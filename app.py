@@ -63,9 +63,9 @@ def run_training_v48(_detector, df):
     with st.spinner('모델 학습 및 백테스트 중...'):
         # [AUTO] 검증 구간 자동 설정 (최근 1년)
         # split_date = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
-        # 하지만 안정성을 위해 고정된 날짜 사용 권장 (2022-01-01)
+        # 하지만 안정성을 위해 고정된 날짜 사용 권장 (2024-01-01)
         # [TUNING] Golden Ratio Tuning 시에는 더 긴 검증 구간이 필요할 수 있음
-        _detector.train_model(df, split_date='2022-01-01')
+        _detector.train_model(df, split_date='2024-01-01')
     return _detector
 
 # 모델 및 데이터 로드
@@ -89,8 +89,8 @@ st.sidebar.info(f"""
 **모델 정보**
 - 레이어: 7개
 - 피처: 22개
-- 학습 기간: 2002-2021
-- 검증 기간: 2022-2026
+- 학습 기간: 2002-2023
+- 검증 기간: 2024-2026
 """)
 
 if st.sidebar.button("🔄 데이터 갱신"):
@@ -519,8 +519,8 @@ elif page == "ℹ️ About":
        - Fed Balance Sheet - TGA - RRP
        - 일일 유동성 변화율
     
-    ### 📊 성능 (2022-2026 검증)
-    - **AUC**: 0.403
+    ### 📊 성능 (2024-2026 검증)
+    - **AUC**: 0.703
     - **Recall**: 6% (1/18 crashes detected)
     - **조기경보 성공**: SVB (2022), Black Monday (2024), 3월 폭락 (2025)
     
