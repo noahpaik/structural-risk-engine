@@ -1206,9 +1206,10 @@ class StructuralRiskDetector2026:
     
     def train_model(self, df, split_date='2024-01-01'):
         """
-        [전략 수정] Time-Machine Weighting (2002-2007 Boost)
-        - 사장님 통찰: "2002~2007년(인터넷 성숙기)은 지금(AI 상승기)과 유사하다."
-        - 조치: 해당 기간 데이터에 샘플 가중치(Sample Weight) 3배 적용.
+        [긴급 처방 V2] Extreme Recall Tuning (절대평가)
+        - 목표: Recall 85% 이상 강제 달성. Precision 포기.
+        - 전략: "조금이라도 낌새가 이상하면 무조건 경보를 울려라."
+        - 변경: Class Weight 10배, Threshold Safety Net 0.10
         """
         from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
         from sklearn.ensemble import RandomForestClassifier, VotingClassifier
@@ -1217,7 +1218,7 @@ class StructuralRiskDetector2026:
         import numpy as np
         
         print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 - Time-Machine Weighting (2002-2007 Boost)")
+        print(f"[AI] 모델 학습 시작 - Extreme Recall Strategy (Target: 85%)")
         
         # 1. 데이터 준비 (사모신용 제외 유지)
         df_labeled = df.dropna(subset=['crash']).sort_index()
@@ -1253,9 +1254,9 @@ class StructuralRiskDetector2026:
         
         print(f"   학습 데이터: {len(X_train)}개 (Crash: {y_train.sum()}개)")
         
-        # [기존] 클래스 불균형 가중치 (폭락/정상 비율)
+        # [극약 처방] 불균형 가중치 10배 뻥튀기 (Make it paranoid)
         neg, pos = np.bincount(y_train)
-        class_weight_val = (neg / pos) * 3.0 
+        scale_pos_weight_val = (neg / pos) * 10.0 
         
         tscv = TimeSeriesSplit(n_splits=3)
         
@@ -1272,26 +1273,26 @@ class StructuralRiskDetector2026:
         
         print("[Training] 1. Random Forest 최적화 중...")
         rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
-        # Random Forest는 fit에서 sample_weight 지원
-        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
-        rf_search.fit(X_train, y_train, sample_weight=weights_train) # [중요] 가중치 주입
+        # Recall 최우선 scoring
+        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=3, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
+        rf_search.fit(X_train, y_train, sample_weight=weights_train) 
         best_rf = rf_search.best_estimator_
         
         # ======================================================================
-        # [Model 2] XGBoost
+        # [Model 2] XGBoost (가중치 10배)
         # ======================================================================
         xgb_params = {
             'n_estimators': [100, 200],
             'learning_rate': [0.05, 0.1],
             'max_depth': [3, 5],
             'subsample': [0.8, 1.0],
-            'scale_pos_weight': [class_weight_val] 
+            'scale_pos_weight': [scale_pos_weight_val] # 10배 가중치
         }
         
         print("[Training] 2. XGBoost 최적화 중...")
         xgb_base = XGBClassifier(eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
-        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
-        xgb_search.fit(X_train, y_train, sample_weight=weights_train) # [중요] 가중치 주입
+        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=3, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
+        xgb_search.fit(X_train, y_train, sample_weight=weights_train)
         best_xgb = xgb_search.best_estimator_
         
         # ======================================================================
@@ -1302,33 +1303,36 @@ class StructuralRiskDetector2026:
             estimators=[('rf', best_rf), ('xgb', best_xgb)],
             voting='soft', weights=[1, 1], n_jobs=-1
         )
-        voting_clf.fit(X_train, y_train, sample_weight=weights_train) # Voting도 fit에서 sample_weight 지원
+        voting_clf.fit(X_train, y_train, sample_weight=weights_train) 
         
         # ======================================================================
-        # [핵심] Forced Recall Optimization (Recall 70% 강제 맞춤)
+        # [핵심] Extreme Recall Optimization (Recall 85% 강제)
         # ======================================================================
-        print("\n[Optimization] 'Recall 70%'를 보장하는 임계값 강제 산출 중...")
+        print("\n[Optimization] 'Recall 85%'를 보장하는 임계값 강제 산출 중...")
         
-        # 학습 데이터에 대한 확률값 추출 (Threshold 튜닝용)
         y_prob = voting_clf.predict_proba(X_train)[:, 1]
         precisions, recalls, thresholds = precision_recall_curve(y_train, y_prob)
         
-        # Recall이 0.70 (70%) 이상인 구간 중에서, Precision이 가장 좋은 곳 찾기
-        target_recalls = [0.70, 0.60, 0.50]
-        optimal_threshold = 0.20 # 기본값
+        # 목표 Recall 상향 조정
+        target_recalls = [0.85, 0.75, 0.65]
+        optimal_threshold = 0.10 # 기본값 (매우 낮게 설정)
         
         for target in target_recalls:
+            # Recall 조건을 만족하는 지점들 찾기
             valid_indices = [i for i, r in enumerate(recalls[:-1]) if r >= target]
+            
             if len(valid_indices) > 0:
+                # 그 중에서 Precision이 가장 높은 것 선택
                 best_idx = max(valid_indices, key=lambda i: precisions[i])
                 optimal_threshold = thresholds[best_idx]
+                
                 print(f"   >>> 성공! Target Recall {target*100}% 달성.")
                 print(f"   >>> 결정된 Threshold: {optimal_threshold:.5f}")
                 print(f"   >>> 예상 Precision: {precisions[best_idx]*100:.1f}%")
                 break
         else:
-            print("   >>> [WARN] 목표 Recall 달성 실패. 안전값 0.15 적용.")
-            optimal_threshold = 0.15
+            print("   >>> [WARN] 목표 Recall 달성 실패. 안전값 0.10 적용.")
+            optimal_threshold = 0.10
             
         self.model = voting_clf
         self.threshold = optimal_threshold
