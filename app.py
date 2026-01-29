@@ -63,8 +63,9 @@ def run_training_v48(_detector, df):
     with st.spinner('모델 학습 및 백테스트 중...'):
         # [AUTO] 검증 구간 자동 설정 (최근 1년)
         # split_date = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
-        # 하지만 안정성을 위해 고정된 날짜 사용 권장 (사용자 요청: 2023-01-01부터 검증)
-        _detector.train_model(df, split_date='2023-01-01')
+        # [USER REQUEST] AI 상승장(2023)을 학습에 포함
+        # 2023년 SVB 사태와 AI 랠리 초입을 배워야 2024-2026을 예측 가능
+        _detector.train_model(df, split_date='2024-01-01')
     return _detector
 
 # 모델 및 데이터 로드
