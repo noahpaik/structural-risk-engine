@@ -1243,10 +1243,10 @@ class StructuralRiskDetector2026:
         # [Model 1] Random Forest
         # ======================================================================
         rf_params = {
-            'n_estimators': [100, 200],
-            'max_features': [0.3, 'sqrt'], # 0.5 제거 (과적합 방지)
-            'max_depth': [10, 20, None],
-            'min_samples_leaf': [0.01, 0.05],
+            'n_estimators': [200, 500],
+            'max_features': ['sqrt'], # 0.5 제거 (과적합 방지)
+            'max_depth': [5, 10, 15],
+            'min_samples_leaf': [0.05, 0.1],
             'bootstrap': [True],
             'class_weight': ['balanced']
         }
@@ -1265,13 +1265,12 @@ class StructuralRiskDetector2026:
         scale_pos_weight = neg / pos if pos > 0 else 1.0
         
         xgb_params = {
-            'n_estimators': [100, 200, 500],
-            'learning_rate': [0.01, 0.05, 0.1],
-            'max_depth': [3, 5, 7],
-            'min_child_weight': [1, 3, 5],
+            'n_estimators': [100, 200],
+            'learning_rate': [0.01, 0.05], # [수정] 천천히 학습 (0.1, 0.2 제거)
+            'max_depth': [3, 5],           # [수정] 아주 얕게 (복잡한 패턴 무시)
             'subsample': [0.6, 0.8],
             'colsample_bytree': [0.6, 0.8],
-            'scale_pos_weight': [scale_pos_weight, scale_pos_weight * 2] # 가중치 탐색
+            'scale_pos_weight': [1, 3]     # [수정] 가중치 축소
         }
         
         print("[Training] 2. XGBoost 최적화 중...")
@@ -1298,8 +1297,9 @@ class StructuralRiskDetector2026:
         print(f"   >>> Random Forest Best F1: {rf_search.best_score_:.4f}")
         print(f"   >>> XGBoost Best F1: {xgb_search.best_score_:.4f}")
         
-        # 4. 검증 및 결과 저장
-        optimal_threshold = 0.35
+        # [핵심 수정] Threshold 대폭 상향
+        # Precision(정확도)을 높이기 위해 "확실한 놈만 쏴라" 명령
+        optimal_threshold = 0.60 
         self.model = voting_clf
         self.threshold = optimal_threshold
         
