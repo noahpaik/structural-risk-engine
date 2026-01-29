@@ -629,6 +629,57 @@ class StructuralRiskDetector2026:
             return pd.Series()
     
     # ============================================
+    # LAYER 3.5: Paper Alignment Features (Sheikh Sadik 2024)
+    # ============================================
+    def get_paper_features(self, spy_close, start_date):
+        """
+        논문(Sheikh Sadik 2024)에서 핵심적으로 사용한 고차 모멘트 및 상관관계 피처
+        """
+        print("[INFO] Sheikh Sadik (2024) 피처 생성 중 (Skew, Kurtosis, Correlation)...")
+        
+        # 1. Rolling Skewness & Kurtosis (Fat Tail Risk Detection)
+        # "수익률 분포가 찌그러지거나(Skew), 꼬리가 두꺼워지면(Kurtosis) 폭락 징조다."
+        returns = spy_close.pct_change()
+        
+        paper_features = pd.DataFrame(index=spy_close.index)
+        
+        windows = [22, 66, 252] # 단기, 중기, 장기
+        for w in windows:
+            paper_features[f'ret_skew_{w}'] = returns.rolling(w).skew()
+            paper_features[f'ret_kurt_{w}'] = returns.rolling(w).kurt()
+            
+        # 2. Asset Correlations (Systemic Risk / Contagion)
+        # "주식과 채권이 같이 떨어지거나(Corr > 0), VIX가 주식과 같이 움직이면 이상징후."
+        try:
+            # TLT(장기채), ^VIX 다운로드
+            aux_df = yf.download(['TLT', '^VIX'], start=start_date, progress=False)
+            if isinstance(aux_df.columns, pd.MultiIndex):
+                aux_df.columns = aux_df.columns.get_level_values(0) # Ticker 레벨 제거
+                
+            tlt_close = aux_df['TLT'] if 'TLT' in aux_df.columns else aux_df.iloc[:, 0] # Fallback
+            vix_close = aux_df['^VIX'] if '^VIX' in aux_df.columns else aux_df.iloc[:, 1]
+            
+            # 인덱스 정렬
+            tlt_close = tlt_close.reindex(spy_close.index).ffill()
+            vix_close = vix_close.reindex(spy_close.index).ffill()
+            
+            # Correlation Window: 126일 (약 6개월) - 논문 기준
+            w_corr = 126
+            
+            # SPY vs TLT (주식-채권 상관관계)
+            # 평소엔 음수(-)여야 함. 양수(+)로 튀면 "모든 자산이 다 위험하다"는 신호.
+            paper_features['corr_spy_tlt'] = returns.rolling(w_corr).corr(tlt_close.pct_change())
+            
+            # SPY vs VIX (주식-변동성 상관관계)
+            # 평소엔 매우 강한 음수(-0.7). 이게 깨지면(0으로 가면) 시장 구조가 이상한 것.
+            paper_features['corr_spy_vix'] = returns.rolling(w_corr).corr(vix_close.pct_change())
+
+        except Exception as e:
+            print(f"[WARN] 보조 자산(TLT, VIX) 로드 실패로 상관관계 피처 생략: {e}")
+            
+        return paper_features.fillna(0)
+
+    # ============================================
     # LAYER 4 (복구): HMM 기반 국면 탐지
     # ============================================
     def get_market_regime_hmm(self, spy_df):
@@ -862,6 +913,11 @@ class StructuralRiskDetector2026:
 
         # [복구] HMM 국면 탐지
         hmm_signal = self.get_market_regime_hmm(spy_df)
+        
+        # [NEW] Paper Alignment Features 계산
+        paper_dfs = self.get_paper_features(spy_close, start_date)
+        # Timezone 정리
+        if paper_dfs.index.tz is not None: paper_dfs.index = paper_dfs.index.tz_localize(None)
 
         # ==============================================================================
         # [NEW] 사모신용(Private Credit) 스트레스 - TCPC 중심
@@ -1028,7 +1084,15 @@ class StructuralRiskDetector2026:
             
             # [NEW] 사모신용 충격 트리거 (Hybrid Trigger)
             # 압력(Strain)이 0이어도, TCPC가 급락하면 그 자체로 '신용 사건'임
-            'context_private_credit': (private_credit_signal * (1 + accumulated_strain) * tcpc_panic).astype(float)             
+            'context_private_credit': (private_credit_signal * (1 + accumulated_strain) * tcpc_panic).astype(float),
+            
+            # [NEW] Paper Features (Skew, Kurtosis, Correlation)
+            'skew_66': paper_dfs['ret_skew_66'],
+            'kurt_66': paper_dfs['ret_kurt_66'],
+            'sk_252': paper_dfs['ret_skew_252'], # Long-term Skew
+            'kt_252': paper_dfs['ret_kurt_252'], # Long-term Kurtosis
+            'corr_bond': paper_dfs['corr_spy_tlt'],
+            'corr_vix': paper_dfs['corr_spy_vix'],
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
         }).sort_index().ffill().dropna()
