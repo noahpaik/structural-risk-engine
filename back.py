@@ -761,6 +761,26 @@ class StructuralRiskDetector2026:
     # ============================================
     # LAYER 5: 통합 및 모델 학습
     # ============================================
+
+    def create_target(self, df, crash_threshold=-0.10, lookforward_window=21):
+        """
+        [논문 기반 수정] Target Definition
+        - Forecast Horizon: 21일 (기존 20일 -> 21일)
+        - Threshold: Drawdown -10% (유지)
+        """
+        
+        # 1. 향후 21일간의 최저점(Low) 탐색
+        indexer = pd.api.indexers.FixedForwardWindowIndexer(window_size=lookforward_window)
+        future_low = df['Low'].rolling(window=indexer).min()
+        
+        # 2. 현재 종가 대비 최대 낙폭 (MDD)
+        # "오늘 종가에 진입했을 때, 21일 내에 -10% 이상 찍히는가?"
+        future_mdd = (future_low - df['Close']) / df['Close']
+        
+        # 3. 라벨 생성
+        y = (future_mdd < crash_threshold).astype(int)
+        
+        return y
     
     # [OK] 핵심 수정: 미래 데이터까지 로드 (Updated dynamically)
     def prepare_training_data(self, start_date='2023-01-01', end_date=None):
@@ -907,8 +927,18 @@ class StructuralRiskDetector2026:
         vol_panic = vol_panic.reindex(hmm_signal.index).fillna(0)
         tcpc_panic = tcpc_panic.reindex(hmm_signal.index).fillna(0)
         
-        for i in range(len(hmm_signal)):
+        # [수정] 이동평균선 기간 변경 (50일 -> 66일)
+        # 논문의 '중기(Quarterly)' 기준인 66일 적용
+        spy_ma_mid = spy_close.rolling(66).mean()
+        
+        # 인덱스 정렬 확인
+        spy_ma_mid = spy_ma_mid.reindex(hmm_signal.index).ffill()
+        spy_close_aligned = spy_close.reindex(hmm_signal.index).ffill()
 
+        for i in range(len(hmm_signal)):
+            # 추세선 비교도 66일선 사용
+            trend_line = spy_ma_mid.iloc[i]
+            current_price = spy_close_aligned.iloc[i]
             
             # [NEW] 외부 충격 가속도 계산 (HMM 상태와 무관하게 계산)
             # 환율(FX)에 가장 높은 가중치 5 부여 (2025년 타겟팅)
@@ -930,9 +960,10 @@ class StructuralRiskDetector2026:
                 current_strain += (1 + external_shock)
                 
             else:
-                # Normal 상태 + 하락 추세
+                # Normal 상태 + 하락 추세 (66일 이평선 아래 확인)
                 # 외부 충격이 있을 때만 압력 증가
-                if external_shock > 0:
+                # [논문 조건] Normal Regime이어도, 추세가 꺾이고(MA66 하회) 충격이 오면 압력 축적
+                if (current_price < trend_line) and (external_shock > 0):
                     current_strain += external_shock
                 else:
                     # 아무 일 없으면 자연 냉각
@@ -1033,30 +1064,22 @@ class StructuralRiskDetector2026:
 
         # ==============================================================================
         # [수정] 폭락 정의 변경: "종가(Close) 기준이 아니라 최저점(Low) 기준 MDD"
-        # 논리: "지금 안 팔면, 향후 20일 안에 내 계좌가 장중 포함 -10% 이상 깨지는가?"
+        # [수정] create_target 함수 호출 (21일, -10%)
         # ==============================================================================
-
-        # 1. 향후 20일간의 최저점(Low) 탐색 (Forward Looking)
-        # FixedForwardWindowIndexer를 써야 미래 데이터를 당겨올 수 있습니다.
-        indexer = pd.api.indexers.FixedForwardWindowIndexer(window_size=20)
+        crash_labels = self.create_target(spy_df, crash_threshold=-0.10, lookforward_window=21)
         
-        # spy_df['Low']가 필요합니다. (위에서 spy_df는 이미 로드되어 있음)
-        future_low = spy_df['Low'].rolling(window=indexer).min()
+        # [옵션] VIX 급등 조건도 살리고 싶다면 OR 조건으로 결합
+        # 하지만 논문대로라면 순수 MDD가 맞습니다. 위 함수에서 이미 처리함.
+        # 여기서는 VIX Spike를 보조적으로만 활용하거나, create_target 내부가 아니라면 여기서 병합.
+        # create_target이 순수 MDD만 반환하므로, VIX Spike를 여기서 추가하고 싶다면:
         
-        # 2. 현재 종가 대비 최대 낙폭 (Maximum Drawdown from Current Close)
-        # "오늘 종가에 샀는데, 20일 안에 장중 최저점이 -10%를 찍으면 폭락이다."
-        # (종가가 회복되어 마감했더라도, 장중에 죽다 살아났으면 위험으로 간주)
-        future_mdd = (future_low - spy_df['Close']) / spy_df['Close']
+        # 1. 향후 21일간의 최저점(Low) 탐색 (Forward Looking)
+        indexer = pd.api.indexers.FixedForwardWindowIndexer(window_size=21)
+        future_10d_sum = returns.rolling(window=indexer).sum() # 향후 21일 이내
         
-        # 3. 라벨 생성
-        # 기준: 장중 변동성 고려하여 -10% (0.10) 정도로 설정
-        # (Low 기준이므로 Close 기준보다 수치가 더 깊게 나옵니다)
-        crash_labels = (future_mdd < -0.10).astype(int)
-
-        # [옵션] VIX 급등 조건도 살리고 싶다면 아래와 같이 OR 조건으로 결합
-        future_10d_sum = returns.rolling(window=indexer).sum() # 향후 10일 단순 합
+        # 기존 로직과 병합 (Optional)
         crash_labels = (
-            (future_mdd < -0.10) | 
+            (crash_labels == 1) | 
             ((future_10d_sum < -0.07) & vix_spike)
         ).astype(int)
         
@@ -1176,275 +1199,90 @@ class StructuralRiskDetector2026:
         return df
         
     
-    def train_model(self, df, split_date='2024-01-01', target_recall=0.55, max_fpr=0.40, test_size=0.2):
+    def train_model(self, df):
         """
-        XGBoost Walk-Forward 학습 (Advanced Tuning)
-        - Time-Decay Sample Weights
-        - F-Score Maximization (F2 Score: Recall biased)
+        [논문 기반 최종 수정] Ensemble Model (RF + XGBoost)
+        - Sheikh Sadik (2024) 논문의 Hyperparameters 적용
+        - 두 모델의 장점을 결합한 Soft Voting Ensemble 구현
         """
-        print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 (Advanced Tuning)")
+        from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
+        from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+        from xgboost import XGBClassifier # pip install xgboost 필요
+        from sklearn.metrics import f1_score
         
-        # 1. [중요] 라벨(crash)이 없는 데이터 제거 (학습/검증용)
-        df_for_training = df.dropna(subset=['crash'])
+        # 1. 데이터 준비
+        X = df.drop(columns=['crash'])
+        y = df['crash']
         
-        # 2. [중요] 날짜순 정렬 (이게 안 되어 있으면 분할이 꼬임)
-        df_for_training = df_for_training.sort_index()
+        # 2. 시계열 교차 검증 (4-Fold)
+        tscv = TimeSeriesSplit(n_splits=4)
         
-        X = df_for_training.drop('crash', axis=1)
-        y = df_for_training['crash']
-        
-        # 3. [수정] 날짜 기반 분할 (iloc 대신 명확한 조건문 사용)
-        split_ts = pd.Timestamp(split_date)
-        print(f"   Split Date: {split_ts.date()}")
-        
-        # 날짜 조건으로 마스크 생성
-        mask_train = X.index < split_ts
-        mask_test = X.index >= split_ts
-        
-        X_train, X_test = X[mask_train], X[mask_test]
-        y_train, y_test = y[mask_train], y[mask_test]
-        
-        # --- (에러 방지: 데이터가 비었는지 확인) ---
-        if len(X_train) == 0:
-            print("[CRITICAL ERROR] 학습 데이터가 없습니다. split_date가 너무 과거입니다.")
-            return None
-        if len(X_test) == 0:
-            print(f"[CRITICAL ERROR] 검증 데이터가 없습니다. (데이터 끝: {X.index[-1]})")
-            print(" -> 데이터가 2023년 이전까지만 있거나, 날짜 파싱 문제입니다.")
-            # 강제로 최근 20%를 테스트로 할당 (비상 조치)
-            split_idx = int(len(X) * 0.8)
-            X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-            y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-            print(f" -> [비상 조치] 마지막 20%를 검증셋으로 강제 할당함.")
-
-        # 정보 출력
-        print(f"학습: {len(X_train)} ({X_train.index[0].date()} ~ {X_train.index[-1].date()})")
-        if not X_test.empty:
-            print(f"검증: {len(X_test)} ({X_test.index[0].date()} ~ {X_test.index[-1].date()})")
-        
-        print(f"원본: Normal={len(y_train[y_train==0])}, Crash={len(y_train[y_train==1])}")
-        
-        # ... (이하 1. Class Imbalance Handling 부터는 기존 코드 유지) ...
-        
-        # [추가] 학습 시에는 라벨(crash)이 있는 데이터만 사용해야 함 (NaN 제거)
-        # df_for_training = df.dropna(subset=['crash'])
-        
-        #if split_date:
-        #    print(f"   Split Date: {split_date}")
-        #else:
-        #    print(f"   Test Size: {test_size:.0%}")
-        
-        # 기존 코드에서 df 대신 df_for_training 사용
-        #X = df_for_training.drop('crash', axis=1)
-        #y = df_for_training['crash']
-        
-        # [OK] 날짜 기준 분할 우선
-        #if split_date:
-        #    split_ts = pd.Timestamp(split_date)
-        #    post_split = df.index[df.index >= split_ts]
-        #    if not post_split.empty:
-        #        split_idx = df.index.get_loc(post_split[0])
-        #        print(f"[OK] 강제 분할 시점: {split_ts.date()}")
-        #    else:
-        #        print(f"[WARN] Split date {split_date} out of range, fallback to ratio")
-        #        split_idx = int(len(df) * (1 - test_size))
-        #else:
-        #     split_idx = int(len(df) * (1 - test_size))
-        
-        #X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        #y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-        
-        #print(f"학습: {len(X_train)} ({X_train.index[0].date()} ~ {X_train.index[-1].date()})")
-        #print(f"검증: {len(X_test)} ({X_test.index[0].date()} ~ {X_test.index[-1].date()})")
-        #print(f"원본: Normal={len(y_train[y_train==0])}, Crash={len(y_train[y_train==1])}")
-        
-        # 1. Class Imbalance Handling
-        if y_train.sum() == 0:
-            print("[WARN] 학습 데이터에 Crash 없음. Dummy Model 사용.")
-            pos_weight = 1.0
-        else:
-            # 1. 가중치 복구 (Recall 50% 사수용)
-            # 폭락을 놓치는 건 15배 더 나쁘다. (20은 과하고 5는 약했음)
-            pos_weight = 18.0
-            print(f"[BALANCE] Class Weight (scale_pos_weight): {pos_weight:.2f}")
-
-        # 2. Time-Decay Sample Weights (Linear: 0.5 -> 1.5)
-        # 최근 데이터에 더 높은 가중치를 부여하여 Concept Drift 완화
-        weights = np.linspace(0.5, 0.75, len(X_train))
-        
-        # XGBoost 학습
-        self.model = XGBClassifier(
-            n_estimators=500,
-            learning_rate=0.04,      # 0.05 -> 0.03 (다시 조금 침착하게)
-            max_depth=6,             # 5 -> 6 (복잡한 곱셈 관계 이해하도록 깊이 증가)
-            subsample=0.7,
-            colsample_bytree=0.7,
-            scale_pos_weight=pos_weight,
-            
-            # [NEW] 정밀도(Precision)를 올리는 핵심 파라미터 추가!
-            # 기본값 0 -> 1.5 (노이즈에 과민반응 금지)
-            gamma=1.5,               
-            # 기본값 1 -> 5 (너무 적은 샘플로 판단 금지)
-            min_child_weight=5,
-            
-            random_state=42,
-            eval_metric='logloss'
-        )
-        
-        self.model.fit(
-            X_train, y_train,
-            sample_weight=weights,   # [OK] 가중치 적용
-            eval_set=[(X_test, y_test)],
-            verbose=False
-        )
-        
-        # 예측 확률
-        y_pred_proba = self.model.predict_proba(X_test)[:, 1]
-        
-        # [SMOOTHING] 물 타기 금지! (span=20 -> 3)
-        y_pred_proba = pd.Series(y_pred_proba).ewm(span=3).mean().values
-        
-        # 3. Dynamic Thresholding (Maximize F2-Score)
-        # F2-Score: Recall에 Precision보다 2배 더 가중치 (Beta=2)
-        #precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
-        
-        #best_f2 = 0
-        #optimal_threshold = 0.5
-        
-        # 분모가 0이 되는 것을 방지
-        #numerator = 2 * (precision * recall)
-        #denominator = precision + recall
-        #f2_scores = np.divide(numerator, denominator, out=np.zeros_like(numerator), where=denominator!=0)
-        
-        # Find best threshold
-        # if len(thresholds) > 0:
-        #    best_idx = np.argmax(f2_scores[:-1]) # thresholds length = recall length - 1 (usually)
-        #    # scikit-learn precision_recall_curve: thresholds is shorter by 1
-        #    if best_idx < len(thresholds):
-        #        best_f2 = f2_scores[best_idx]
-        #        optimal_threshold = thresholds[best_idx]
-        
-        # [수정] 오경보를 줄이기 위해 다시 상향
-        # [TUNING] 0.45 -> 0.42 (신호가 강해졌으므로 살짝 낮춰도 됨)
-        optimal_threshold = 0.35
-        print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
-        
-        self.threshold = optimal_threshold
-        
-        y_pred = (y_pred_proba >= optimal_threshold).astype(int)
-        
-        # 평가
-        auc = roc_auc_score(y_test, y_pred_proba)
-        
-        # print(f"{'='*70}")
-        # print(f"[METRICS] 검증 성과")
-        # print(f"{'='*70}")
-        # print(f"AUC: {auc:.3f}")
-        # print(f"\n{classification_report(y_test, y_pred, target_names=['Normal', 'Crash'])}")
-        
-        # Confusion Matrix
-        cm = confusion_matrix(y_test, y_pred)
-        # print(f"Confusion Matrix:")
-        # print(f"  TN: {cm[0,0]:4d}  FP: {cm[0,1]:4d}")
-        # print(f"  FN: {cm[1,0]:4d}  TP: {cm[1,1]:4d}")
-        
-        # [OK] NEW: 신호 발생 날짜 분석
-        # print("\n" + "="*70)
-        # print("[DATE] 신호 발생 상세 분석")
-        # print("="*70)
-        
-        # False Positives (모델 경고 + 실제 정상)
-        fp_indices = np.where((y_pred == 1) & (y_test == 0))[0]
-        fp_dates = X_test.index[fp_indices]
-        
-        # if len(fp_dates) > 0:
-            # print(f"\n[WARN] 경고 신호 발생 (FP={len(fp_dates)}개):")
-            # 연도별로 그룹화
-            # fp_by_year = {}
-            # for date in fp_dates:
-            #     year = date.year
-            #     if year not in fp_by_year:
-            #         fp_by_year[year] = []
-            #     fp_by_year[year].append(date)
-            
-            # for year in sorted(fp_by_year.keys()):
-                # print(f"\n  [{year}년]: {len(fp_by_year[year])}개")
-                # 처음 10개만 출력
-                # dates_to_show = fp_by_year[year][:10]
-                # if len(fp_by_year[year]) > 10:
-        # print(f"    {', '.join([str(d.month).zfill(2) + '-' + str(d.day).zfill(2) for d in dates_to_show])} ... (총 {len(fp_by_year[year])}개)")
-        # print(f"    {', '.join([str(d.month).zfill(2) + '-' + str(d.day).zfill(2) for d in dates_to_show])}")
-        
-        # True Positives
-        tp_indices = np.where((y_pred == 1) & (y_test == 1))[0]
-        tp_dates = X_test.index[tp_indices]
-        
-        # if len(tp_dates) > 0:
-            # print(f"\n[OK] 정확한 폭락 예측 (TP={len(tp_dates)}개):")
-            # for date in tp_dates:
-                # features = X_test.loc[date]
-                # top_features = features.nlargest(3)
-                # date_str = f"{date.year}-{str(date.month).zfill(2)}-{str(date.day).zfill(2)}"
-                # print(f"  {date_str}: 주요 신호 = {', '.join([f'{k}({v:.2f})' for k, v in top_features.items()])}")
-        
-        # False Negatives
-        fn_indices = np.where((y_pred == 0) & (y_test == 1))[0]
-        fn_dates = X_test.index[fn_indices]
-        
-        # if len(fn_dates) > 0:
-            # print(f"\n[ERROR] 놓친 폭락 (FN={len(fn_dates)}개):")
-            # for date in fn_dates[:10]:  # 처음 10개만
-                # date_str = f"{date.year}-{str(date.month).zfill(2)}-{str(date.day).zfill(2)}"
-                # print(f"  {date_str}")
-            # if len(fn_dates) > 10:
-                # print(f"  ... 외 {len(fn_dates)-10}개")
-        
-        # print("="*70 + "\n")
-        
-        # [OK] 백테스트 결과 저장 (Streamlit용)
-        from sklearn.metrics import accuracy_score, f1_score
-        self.backtest_results = {
-            'auc': auc,
-            'recall': recall_score(y_test, y_pred),
-            'precision': precision_score(y_test, y_pred, zero_division=0),
-            'f1': f1_score(y_test, y_pred, zero_division=0),
-            'accuracy': accuracy_score(y_test, y_pred),
-            'confusion_matrix': cm,
-            'threshold': optimal_threshold,
-            'y_test': y_test,
-            'y_pred': y_pred,
-            'y_pred_proba': y_pred_proba,
-            'X_test': X_test,
-            'split_date': split_date
+        # ======================================================================
+        # [Model 1] Random Forest 튜닝 (안정성)
+        # ======================================================================
+        rf_params = {
+            'n_estimators': [100, 200, 500],
+            'max_features': [0.1, 0.3, 0.5, 'sqrt'],
+            'max_depth': [10, 20, 30, None],
+            'min_samples_leaf': [0.001, 0.01, 0.05],
+            'bootstrap': [True],
+            'class_weight': ['balanced']
         }
         
-        # Feature Importance
-        importances = pd.DataFrame({
-            'feature': X.columns,
-            'importance': self.model.feature_importances_
-        }).sort_values('importance', ascending=False).head(15)
+        print("\n[Training] 1. Random Forest 최적화 중...")
+        rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
+        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=5, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
+        rf_search.fit(X, y)
+        best_rf = rf_search.best_estimator_
         
-        # print(f"\n[SEARCH] 상위 15개 Feature Importance:")
-        # print(importances.to_string(index=False))
-        # print(f"{'='*70}\n")
+        # ======================================================================
+        # [Model 2] XGBoost 튜닝 (정확도)
+        # 논문 Hyperparameters: LR [0.01~0.3], Child Weight [0.5~20]
+        # ======================================================================
+        xgb_params = {
+            'n_estimators': [100, 200, 500],
+            'learning_rate': [0.01, 0.05, 0.1, 0.2],  # 학습 속도
+            'max_depth': [3, 5, 7, 10],               # 깊이
+            'min_child_weight': [1, 3, 5, 10],        # 관측치 가중치 합
+            'subsample': [0.6, 0.8, 1.0],             # 데이터 샘플링 비율
+            'colsample_bytree': [0.6, 0.8, 1.0],      # 컬럼 샘플링 비율
+            'scale_pos_weight': [1, 5, 10]            # 불균형 데이터 가중치 (Class Weight와 유사)
+        }
         
-        # Predict on FULL dataset for visualization
-        y_pred_proba_full = self.model.predict_proba(X)[:, 1]
+        print("[Training] 2. XGBoost 최적화 중...")
+        xgb_base = XGBClassifier(eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
+        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=5, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
+        xgb_search.fit(X, y)
+        best_xgb = xgb_search.best_estimator_
         
-        # [SMOOTHING] EMA 20 적용
-        y_pred_proba_full = pd.Series(y_pred_proba_full).ewm(span=20).mean().values
-
-        # 저장
-        self.backtest_results.update({
-            'X_full': X,
-            'y_full': y,
-            'y_pred_proba_full': y_pred_proba_full,
-            'test_start_date': X_test.index[0],
-            'importances': importances
-        })
+        # ======================================================================
+        # [Final] Voting Classifier (앙상블)
+        # 두 모델의 확률을 평균내어 판단 (Soft Voting)
+        # ======================================================================
+        print("[Training] 3. 앙상블(Voting) 모델 통합 중...")
         
-        return self.model
+        # weights=[1, 1] : 두 모델의 의견을 50:50으로 반영
+        # 만약 XGBoost를 더 믿고 싶다면 weights=[1, 2]로 설정 가능
+        voting_clf = VotingClassifier(
+            estimators=[('rf', best_rf), ('xgb', best_xgb)],
+            voting='soft',
+            weights=[1, 1],
+            n_jobs=-1
+        )
+        
+        voting_clf.fit(X, y)
+        
+        print(f"   >>> Random Forest Best F1: {rf_search.best_score_:.4f}")
+        print(f"   >>> XGBoost Best F1: {xgb_search.best_score_:.4f}")
+        
+        # 논문 설정을 따를 때 Threshold는 보통 0.5가 기준이 되지만,
+        # 실전 감각을 반영하여 약간 보수적인 0.35 추천
+        optimal_threshold = 0.35
+        
+        self.model = voting_clf
+        self.threshold = optimal_threshold
+        
+        return voting_clf
     
     # ============================================
     # 백테스트 시각화
