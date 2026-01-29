@@ -885,6 +885,11 @@ class StructuralRiskDetector2026:
         if private_credit_signal.index.tz is not None:
              private_credit_signal.index = private_credit_signal.index.tz_localize(None)
         
+        # [Fix] 데이터 Truncation 방지
+        # TCPC는 2012년 상장됨. 그 이전 데이터가 NaN이 되어 전체 데이터를 2013년 이후로 잘라버리는 문제 해결.
+        # AI 모델은 어차피 이 컬럼을 안 쓰므로(Drop함), 0으로 채워서 행 보존이 최우선.
+        private_credit_signal = private_credit_signal.reindex(spy_close.index).fillna(0)
+             
         # 4. 트리거 설정 (Z-score 1.0 이상이면 발작)
         tcpc_panic = (private_credit_signal > 1.0).astype(int)
 
