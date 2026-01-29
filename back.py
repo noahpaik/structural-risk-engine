@@ -322,7 +322,7 @@ class StructuralRiskDetector2026:
         print("[INFO] 모멘텀 지표 계산 중...")
         
         try:
-            # 1. RSI (14-day) 기본 계산
+        	# 1. RSI (14-day) 기본 계산
         	delta = spy_close.diff()
         	gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         	loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -338,23 +338,23 @@ class StructuralRiskDetector2026:
         	def detect_rsi_divergence(price, rsi, window=14):
             	signals = pd.Series(0, index=price.index, dtype=float)
             
-           	 # 이전 고점/저점 정보를 저장할 변수
-           	 last_peak_price = -np.inf
-           	 last_peak_rsi = -np.inf
+        	# 이전 고점/저점 정보를 저장할 변수
+           	last_peak_price = -np.inf
+           	last_peak_rsi = -np.inf
             
-           	 last_trough_price = np.inf
-           	 last_trough_rsi = np.inf
+           	last_trough_price = np.inf
+           	last_trough_rsi = np.inf
             
-           	 # Rolling Max/Min을 이용해 "지역 고점/저점(Local Extrema)" 여부 판단
-           	 # 오늘 가격이 지난 window일 동안의 최고가와 같다면 -> 잠재적 고점
-           	 is_local_high = (price == price.rolling(window=window).max())
-           	 is_local_low = (price == price.rolling(window=window).min())
+           	# Rolling Max/Min을 이용해 "지역 고점/저점(Local Extrema)" 여부 판단
+           	# 오늘 가격이 지난 window일 동안의 최고가와 같다면 -> 잠재적 고점
+           	is_local_high = (price == price.rolling(window=window).max())
+           	is_local_low = (price == price.rolling(window=window).min())
             
-           	 for i in range(len(price)):
-            	    if i < window: continue # 초기 데이터 건너뜀
+           	for i in range(len(price)):
+            	if i < window: continue # 초기 데이터 건너뜀
                 
                 	curr_price = price.iloc[i]
-               	 curr_rsi = rsi.iloc[i]
+               		curr_rsi = rsi.iloc[i]
                 
                 	# [CASE A] 과매수 다이버전스 (Bearish Divergence) -> 위험 신호 (+)
                	 # 조건: 가격은 신고가 갱신(New High) 했는데, RSI는 이전 고점보다 낮음
@@ -364,9 +364,9 @@ class StructuralRiskDetector2026:
                        	 # 신호 강도는 괴리율에 비례하게 설정 (RSI가 얼마나 힘이 빠졌는지)
                         	signals.iloc[i] = 1.0 + (last_peak_rsi - curr_rsi) / 100.0
                     
-                  	  # 고점 정보 갱신
-                   	 last_peak_price = curr_price
-                   	 last_peak_rsi = curr_rsi
+                  	# 고점 정보 갱신
+                   	last_peak_price = curr_price
+                   	last_peak_rsi = curr_rsi
 
 	                # [CASE B] 과매도 다이버전스 (Bullish Divergence) -> 반등 신호 (-)
     	            # 조건: 가격은 신저가 갱신(New Low) 했는데, RSI는 이전 저점보다 높음
@@ -374,13 +374,13 @@ class StructuralRiskDetector2026:
             	        if (curr_price < last_trough_price) and (curr_rsi > last_trough_rsi):
                 	        # 다이버전스 발생! (강력한 매수/안전 신호)
                     	    # 신호 강도는 음수로 표현
-                       	 signals.iloc[i] = -1.0 - (curr_rsi - last_trough_rsi) / 100.0
+                    	signals.iloc[i] = -1.0 - (curr_rsi - last_trough_rsi) / 100.0
                         
                     	# 저점 정보 갱신
                     	last_trough_price = curr_price
-	                    last_trough_rsi = curr_rsi
+	                	last_trough_rsi = curr_rsi
             
-    	        return signals
+    	    	return signals
 
        		# 2. 다이버전스 신호 산출
        		div_signal = detect_rsi_divergence(spy_close, rsi, window=14)
