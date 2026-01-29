@@ -940,15 +940,15 @@ class StructuralRiskDetector2026:
             trend_line = spy_ma_mid.iloc[i]
             current_price = spy_close_aligned.iloc[i]
             
-            # [NEW] 외부 충격 가속도 계산 (HMM 상태와 무관하게 계산)
-            # 환율(FX)에 가장 높은 가중치 5 부여 (2025년 타겟팅)
-            # [수정] 가속도 공식: 변동성(Vol)이 튀면 압력을 3배로 빨리 채움
-            # [수정] 사모신용(TCPC)이 흔들리면 뇌관 건드린 것임 -> 가중치 4
-            external_shock = (bond_panic.iloc[i] * 3) + \
-                             (fx_panic.iloc[i] * 3) + \
-                             (tcpc_panic.iloc[i] * 4) + \
+            # [수정] 외부 충격 가중치 재조정 (사모신용 부재 보완)
+            # 사모신용(TCPC)이 빠졌으므로, 유동성(Liquidity)과 채권(Bond) 가중치를 높임
+            # bond: 3 -> 4, liq: 2 -> 4 (현금 마르는 것에 더 민감하게)
+            
+            external_shock = (bond_panic.iloc[i] * 4) + \
+                             (fx_panic.iloc[i] * 5) + \
+                             (tcpc_panic.iloc[i] * 0) + \
                              (vol_panic.iloc[i] * 3) + \
-                             (liq_drain.iloc[i] * 2)
+                             (liq_drain.iloc[i] * 4)
             
             if is_stress.iloc[i]:
                 # [핵심 수정 1] 폭락 발생(Stress) -> 압력 즉시 소멸
@@ -1201,143 +1201,113 @@ class StructuralRiskDetector2026:
     
     def train_model(self, df, split_date='2024-01-01'):
         """
-        [Platinum Mode] Oversampling (Recall Booster)
-        - 폭락 데이터 강제 증강 (Manual Oversampling 1:1)
-        - 비율이 1:1이므로 Threshold는 0.5가 자연스러움.
-        - Recall 극대화 전략 (데이터 불균형 완전 해소)
-        - [유지] Hold-out Validation (split_date 기준) to prevent app crash
+        [긴급 처방] Forced Recall Thresholding (상대평가)
+        - 목표: 모델의 확률값이 낮아도(0.1~0.2), 상위 위험군을 무조건 잡아내서 Recall 60% 이상 강제 달성.
+        - 전략: "확신이 없어도, 남들보다 조금만 더 위험해 보이면 쏴라."
         """
         from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
         from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-        from xgboost import XGBClassifier # pip install xgboost 필요
-        from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score, confusion_matrix, roc_auc_score
-        from sklearn.utils import resample
+        from xgboost import XGBClassifier
+        from sklearn.metrics import precision_recall_curve, f1_score, recall_score, precision_score, accuracy_score, confusion_matrix, roc_auc_score
+        import numpy as np
         
         print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 ({split_date} 기준 Hold-out 검증 - Platinum Mode: Oversampling)")
+        print(f"[AI] 모델 학습 시작 - Forced Recall Strategy (Target: 70%)")
         
-        # 1. 데이터 준비 (라벨 있는 것만)
+        # 1. 데이터 준비 (사모신용 제외 유지)
         df_labeled = df.dropna(subset=['crash']).sort_index()
         
         # [전략 수정] 사모신용(Private Credit) 제외 학습
-        # 이유: 2008년 이전 데이터 부재로 인한 노이즈 방지
         # [추가] 파생 변수(Duration, Accel)까지 완벽하게 제거
         drop_cols = ['crash', 'private_credit', 'context_private_credit', 'private_credit_duration', 'private_credit_accel']
         X = df_labeled.drop(columns=drop_cols, errors='ignore')
         y = df_labeled['crash']
         
-        # 2. 날짜 기준 분할
+        # 2. 날짜 기준 분할 (Validation용)
         split_ts = pd.Timestamp(split_date)
         mask_train = X.index < split_ts
         mask_test = X.index >= split_ts
-        
         X_train, X_test = X[mask_train], X[mask_test]
         y_train, y_test = y[mask_train], y[mask_test]
         
-        # 데이터셋 정보 출력
-        print(f"   학습 데이터(Raw): {len(X_train)}개 (Crash: {y_train.sum()}개, {y_train.mean():.1%})")
-        print(f"   검증 데이터: {len(X_test)}개 ({X_test.index[0].date()}~)")
+        print(f"   학습 데이터: {len(X_train)}개 (Crash: {y_train.sum()}개)")
         
-        if len(X_test) == 0:
-            print("[WARN] 검증 데이터가 없습니다! 최근 데이터를 포함하거나 split_date를 조정하세요.")
-            
-        # ----------------------------------------------------------------------
-        # [Platinum Mode] 데이터 증강 (Oversampling)
-        # ----------------------------------------------------------------------
-        # 학습 데이터만 증강 (검증 데이터는 건드리면 안 됨!)
-        # 1. 데이터 합치기
-        train_data = pd.concat([X_train, y_train], axis=1)
+        # [강화] 불균형 가중치 3배 뻥튀기 (Make it paranoid)
+        neg, pos = np.bincount(y_train)
+        scale_pos_weight_val = (neg / pos) * 3.0 
         
-        # 2. 클래스 분리
-        majority = train_data[train_data.crash == 0]
-        minority = train_data[train_data.crash == 1]
-        
-        # 3. 소수 클래스 증강 (복원 추출)
-        if len(minority) > 0:
-            minority_upsampled = resample(minority, 
-                                          replace=True,     # 복원 추출
-                                          n_samples=len(majority),    # 다수 클래스 수에 맞춤
-                                          random_state=42) 
-            
-            # 4. 다시 합치기
-            train_upsampled = pd.concat([majority, minority_upsampled])
-            
-            # 5. X, y 분리
-            X_train_res = train_upsampled.drop('crash', axis=1)
-            y_train_res = train_upsampled.crash
-            
-            print(f"   >>> Oversampling 완료: 총 {len(X_train_res)}개 (Crash: {y_train_res.sum()}개, {y_train_res.mean():.1%})")
-        else:
-            print("[WARN] 학습 데이터에 Crash가 하나도 없습니다! Oversampling 불가.")
-            X_train_res, y_train_res = X_train, y_train
-
-        
-        # 3. 시계열 교차 검증 (학습 데이터 내부에서 수행)
-        # Oversampled 데이터에서는 CV가 정보 누수를 일으킬 수 있으나(같은 샘플이 train/val에 모두 들어감),
-        # 여기서는 하이퍼파라미터 튜닝용으로만 사용하므로 허용하거나, 
-        # 더 엄격하게 하려면 CV 내부에서 Oversampling 해야 함.
-        # 시간 관계상, 여기서는 튜닝은 Oversampled 데이터로 진행 (모델이 폭락 패턴을 강하게 학습하도록 유도)
         tscv = TimeSeriesSplit(n_splits=3)
         
         # ======================================================================
-        # [Model 1] Random Forest (비율 1:1이므로 class_weight 제거 가능)
+        # [Model 1] Random Forest
         # ======================================================================
         rf_params = {
-            'n_estimators': [200, 500],
-            'max_depth': [10, 20, None],
-            'min_samples_leaf': [0.01, 0.05],
+            'n_estimators': [200, 300],
+            'max_depth': [10, 20],
+            'min_samples_leaf': [0.01, 0.05], 
             'max_features': ['sqrt'],
-            # 'class_weight': ['balanced'] # 1:1이므로 제거 or None
+            'class_weight': ['balanced_subsample']
         }
         
-        print("\n[Training] 1. Random Forest (Oversampled) 최적화 중...")
+        print("[Training] 1. Random Forest 최적화 중...")
         rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
-        # Scoring은 'f1' 또는 'recall' (이미 비율이 1:1이라 f1도 괜찮음)
-        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=5, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
-        rf_search.fit(X_train_res, y_train_res)
+        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=3, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
+        rf_search.fit(X_train, y_train)
         best_rf = rf_search.best_estimator_
         
         # ======================================================================
-        # [Model 2] XGBoost (비율 1:1이므로 scale_pos_weight=1)
+        # [Model 2] XGBoost (가중치 강화)
         # ======================================================================
         xgb_params = {
-            'n_estimators': [100, 200, 300],
+            'n_estimators': [100, 200],
             'learning_rate': [0.05, 0.1],
-            'max_depth': [3, 5, 7],
-            'subsample': [0.7, 1.0],
-            'colsample_bytree': [0.7, 1.0],
-            'scale_pos_weight': [1] # 이미 1:1 비율이므로 가중치 1
+            'max_depth': [3, 5],
+            'subsample': [0.8, 1.0],
+            'scale_pos_weight': [scale_pos_weight_val] # 3배 가중치 적용
         }
         
-        print("[Training] 2. XGBoost (Oversampled) 최적화 중...")
+        print("[Training] 2. XGBoost 최적화 중...")
         xgb_base = XGBClassifier(eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
-        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=5, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
-        xgb_search.fit(X_train_res, y_train_res)
+        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=3, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
+        xgb_search.fit(X_train, y_train)
         best_xgb = xgb_search.best_estimator_
         
         # ======================================================================
-        # [Final] Voting Classifier (앙상블)
+        # [Model 3] Voting
         # ======================================================================
-        print("[Training] 3. 앙상블(Voting) 모델 통합 중...")
-        
+        print("[Training] 3. 앙상블 통합 중...")
         voting_clf = VotingClassifier(
             estimators=[('rf', best_rf), ('xgb', best_xgb)],
-            voting='soft',
-            weights=[1, 1],
-            n_jobs=-1
+            voting='soft', weights=[1, 1], n_jobs=-1
         )
+        voting_clf.fit(X_train, y_train)
         
-        # 전체 학습 데이터(Oversampled)로 재학습
-        voting_clf.fit(X_train_res, y_train_res)
+        # ======================================================================
+        # [핵심] Forced Recall Optimization (Recall 70% 강제 맞춤)
+        # ======================================================================
+        print("\n[Optimization] 'Recall 70%'를 보장하는 임계값 강제 산출 중...")
         
-        print(f"   >>> Random Forest Best Recall: {rf_search.best_score_:.4f}")
-        print(f"   >>> XGBoost Best Recall: {xgb_search.best_score_:.4f}")
+        # 학습 데이터에 대한 확률값 추출 (Threshold 튜닝용)
+        y_prob = voting_clf.predict_proba(X_train)[:, 1]
+        precisions, recalls, thresholds = precision_recall_curve(y_train, y_prob)
         
-        # [핵심] 1:1 비율이므로 Threshold는 0.5가 정석
-        optimal_threshold = 0.50
+        # Recall이 0.70 (70%) 이상인 구간 중에서, Precision이 가장 좋은 곳 찾기
+        target_recalls = [0.70, 0.60, 0.50]
+        optimal_threshold = 0.20 # 기본값
         
-        print(f"   >>> Applied Threshold: {optimal_threshold} (Oversampled 1:1)")
-        
+        for target in target_recalls:
+            valid_indices = [i for i, r in enumerate(recalls[:-1]) if r >= target]
+            if len(valid_indices) > 0:
+                best_idx = max(valid_indices, key=lambda i: precisions[i])
+                optimal_threshold = thresholds[best_idx]
+                print(f"   >>> 성공! Target Recall {target*100}% 달성.")
+                print(f"   >>> 결정된 Threshold: {optimal_threshold:.5f}")
+                print(f"   >>> 예상 Precision: {precisions[best_idx]*100:.1f}%")
+                break
+        else:
+            print("   >>> [WARN] 목표 Recall 달성 실패. 안전값 0.15 적용.")
+            optimal_threshold = 0.15
+            
         self.model = voting_clf
         self.threshold = optimal_threshold
         
