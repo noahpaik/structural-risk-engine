@@ -452,28 +452,40 @@ elif page == "🔬 모델 진단":
     st.subheader("🎯 Feature Importance (Top 15)")
     
     if hasattr(detector, 'model') and detector.model is not None:
-        X = df.drop('crash', axis=1)
-        importances = pd.DataFrame({
-            'feature': X.columns,
-            'importance': detector.model.feature_importances_
-        }).sort_values('importance', ascending=False).head(15)
+        importances = None
         
-        fig_imp = go.Figure([go.Bar(
-            x=importances['importance'],
-            y=importances['feature'],
-            orientation='h',
-            marker_color='steelblue'
-        )])
-        fig_imp.update_layout(
-            title="Feature Importance",
-            xaxis_title="Importance",
-            yaxis_title="Feature",
-            height=500
-        )
-        st.plotly_chart(fig_imp, width="stretch")
-        
-        # 테이블
-        st.dataframe(importances, width="stretch")
+        # 1. Try to get pre-calculated importances from backtest_results (Preferred for Ensemble)
+        if hasattr(detector, 'backtest_results') and 'importances' in detector.backtest_results:
+            importances = detector.backtest_results['importances']
+            
+        # 2. Try to get from model directly (Single models like XGBoost/RF)
+        elif hasattr(detector.model, 'feature_importances_'):
+            X = df.drop('crash', axis=1)
+            importances = pd.DataFrame({
+                'feature': X.columns,
+                'importance': detector.model.feature_importances_
+            }).sort_values('importance', ascending=False).head(15)
+            
+        if importances is not None:
+            fig_imp = go.Figure([go.Bar(
+                x=importances['importance'],
+                y=importances['feature'],
+                orientation='h',
+                marker_color='steelblue'
+            )])
+            fig_imp.update_layout(
+                title="Feature Importance",
+                xaxis_title="Importance",
+                yaxis_title="Feature",
+                height=500
+            )
+            st.plotly_chart(fig_imp, width="stretch")
+            
+            # 테이블
+            st.dataframe(importances, width="stretch")
+        else:
+             st.info("현재 모델(Ensemble)은 Feature Importance를 직접 제공하지 않거나, 계산된 결과가 없습니다.")
+
     else:
         st.warning("모델이 학습되지 않았습니다.")
 
