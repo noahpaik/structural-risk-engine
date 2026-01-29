@@ -1221,7 +1221,8 @@ class StructuralRiskDetector2026:
         
         # [전략 수정] 사모신용(Private Credit) 제외 학습
         # 이유: 2008년 이전 데이터 부재로 인한 노이즈 방지
-        drop_cols = ['crash', 'private_credit', 'context_private_credit']
+        # [추가] 파생 변수(Duration, Accel)까지 완벽하게 제거
+        drop_cols = ['crash', 'private_credit', 'context_private_credit', 'private_credit_duration', 'private_credit_accel']
         X = df_labeled.drop(columns=drop_cols, errors='ignore')
         y = df_labeled['crash']
         
@@ -1508,8 +1509,8 @@ class StructuralRiskDetector2026:
             return
         
         # [Fix] 학습 때 제외한 컬럼(사모신용 등)은 예측 시에도 제외해야 함
-        # train_model에서 drop_cols = ['crash', 'private_credit', 'context_private_credit'] 사용함
-        drop_cols = ['crash', 'private_credit', 'context_private_credit']
+        # train_model에서 drop_cols 동일하게 적용
+        drop_cols = ['crash', 'private_credit', 'context_private_credit', 'private_credit_duration', 'private_credit_accel']
         X = df.drop(columns=drop_cols, errors='ignore')
         
         current_features = X.iloc[-1:].copy()
