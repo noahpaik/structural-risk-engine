@@ -322,15 +322,79 @@ class StructuralRiskDetector2026:
         print("[INFO] 모멘텀 지표 계산 중...")
         
         try:
-            # 1. RSI (14-day)
-            delta = spy_close.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
+            # 1. RSI (14-day) 기본 계산
+        	delta = spy_close.diff()
+        	gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        	loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        	rs = gain / loss
+        	rsi = 100 - (100 / (1 + rs))
+
+	        # ==============================================================================
+    	    # [NEW] RSI 다이버전스 (Divergence) 로직
+        	# 논리: 가격은 신고가/신저가를 갱신했으나, RSI는 갱신하지 못하면 추세 반전 신호다.
+       	 	# ==============================================================================
+        
+        	# 1. 다이버전스 감지 함수 (내부 함수)
+        	def detect_rsi_divergence(price, rsi, window=14):
+            	signals = pd.Series(0, index=price.index, dtype=float)
             
-            # RSI 과매수(>70) 신호를 Z-score로 변환
-            rsi_stress = ((rsi - 50) / 20).clip(-3, 3)  # Normalize around 50
+           	 # 이전 고점/저점 정보를 저장할 변수
+           	 last_peak_price = -np.inf
+           	 last_peak_rsi = -np.inf
+            
+           	 last_trough_price = np.inf
+           	 last_trough_rsi = np.inf
+            
+           	 # Rolling Max/Min을 이용해 "지역 고점/저점(Local Extrema)" 여부 판단
+           	 # 오늘 가격이 지난 window일 동안의 최고가와 같다면 -> 잠재적 고점
+           	 is_local_high = (price == price.rolling(window=window).max())
+           	 is_local_low = (price == price.rolling(window=window).min())
+            
+           	 for i in range(len(price)):
+            	    if i < window: continue # 초기 데이터 건너뜀
+                
+                	curr_price = price.iloc[i]
+               	 curr_rsi = rsi.iloc[i]
+                
+                	# [CASE A] 과매수 다이버전스 (Bearish Divergence) -> 위험 신호 (+)
+               	 # 조건: 가격은 신고가 갱신(New High) 했는데, RSI는 이전 고점보다 낮음
+                	if is_local_high.iloc[i]:
+                    	if (curr_price > last_peak_price) and (curr_rsi < last_peak_rsi):
+                        	# 다이버전스 발생! (강력한 매도/위험 신호)
+                       	 # 신호 강도는 괴리율에 비례하게 설정 (RSI가 얼마나 힘이 빠졌는지)
+                        	signals.iloc[i] = 1.0 + (last_peak_rsi - curr_rsi) / 100.0
+                    
+                  	  # 고점 정보 갱신
+                   	 last_peak_price = curr_price
+                   	 last_peak_rsi = curr_rsi
+
+	                # [CASE B] 과매도 다이버전스 (Bullish Divergence) -> 반등 신호 (-)
+    	            # 조건: 가격은 신저가 갱신(New Low) 했는데, RSI는 이전 저점보다 높음
+        	        elif is_local_low.iloc[i]:
+            	        if (curr_price < last_trough_price) and (curr_rsi > last_trough_rsi):
+                	        # 다이버전스 발생! (강력한 매수/안전 신호)
+                    	    # 신호 강도는 음수로 표현
+                       	 signals.iloc[i] = -1.0 - (curr_rsi - last_trough_rsi) / 100.0
+                        
+                    	# 저점 정보 갱신
+                    	last_trough_price = curr_price
+	                    last_trough_rsi = curr_rsi
+            
+    	        return signals
+
+       		# 2. 다이버전스 신호 산출
+       		div_signal = detect_rsi_divergence(spy_close, rsi, window=14)
+        
+       	 	# 3. 신호 연속성 부여 (Exponential Decay)
+     	 	# 다이버전스는 '순간' 발생하므로, 그 충격을 며칠간 유지시켜 모델이 학습하게 함
+       	 	rsi_stress = div_signal.ewm(span=10).mean()
+        
+       	 	# 4. 스케일링 (Z-score와 비슷하게 맞춤)
+       	 	# 값이 작으므로 증폭 (기존 로직과 호환성 유지)
+       	 	# 양수(Bearish): 위험, 음수(Bullish): 안전
+       	 	rsi_stress = rsi_stress * 5.0 
+        
+   	    	# (기존 Z-score 로직인 ((rsi - 50) / 20) 은 삭제하고 이걸로 대체)
             
             # 2. MACD (12-26-9)
             ema_12 = spy_close.ewm(span=12, adjust=False).mean()
