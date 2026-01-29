@@ -386,41 +386,37 @@ class StructuralRiskDetector2026:
         # 3. 신호 연속성 부여 (Exponential Decay)
         # 5.0배 증폭하여 Z-score와 체급 맞춤
         rsi_stress = div_signal.ewm(span=10).mean() * 5.0
-            
-            # 2. MACD (12-26-9)
-            ema_12 = spy_close.ewm(span=12, adjust=False).mean()
-            ema_26 = spy_close.ewm(span=26, adjust=False).mean()
-            macd_line = ema_12 - ema_26
-            signal_line = macd_line.ewm(span=9, adjust=False).mean()
-            macd_histogram = macd_line - signal_line
-            
-            # MACD 히스토그램 정규화 (음수일수록 약세)
-            macd_norm = stats.zscore(macd_histogram.dropna())
-            macd_stress = pd.Series(macd_norm, index=macd_histogram.dropna().index)
-            
-            # 3. Price vs MA200 (장기 추세 이탈)
-            ma_200 = spy_close.rolling(window=200).mean()
-            price_deviation = (spy_close - ma_200) / ma_200 * 100  # Percentage
-            
-            # 과도한 상승(>10%) 후 반전을 포착
-            deviation_stress = (price_deviation / 5).clip(-3, 3)  # Normalize
-            
-            # 통합
-            momentum_df = pd.DataFrame({
-                'rsi_stress': rsi_stress,
-                'macd_stress': macd_stress,
-                'price_deviation': deviation_stress
-            }, index=spy_close.index).dropna()
-            
-            # 평균 모멘텀 신호
-            momentum_signal = momentum_df.mean(axis=1)
-            
-            print(f"[OK] 모멘텀 데이터: {len(momentum_signal)} 포인트")
-            return momentum_signal
-            
-        except Exception as e:
-            print(f"[ERROR] 모멘텀 계산 오류: {e}")
-            return pd.Series()
+        
+        # 2. MACD (12-26-9)
+        ema_12 = spy_close.ewm(span=12, adjust=False).mean()
+        ema_26 = spy_close.ewm(span=26, adjust=False).mean()
+        macd_line = ema_12 - ema_26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        macd_histogram = macd_line - signal_line
+        
+        # MACD 히스토그램 정규화 (음수일수록 약세)
+        macd_norm = stats.zscore(macd_histogram.dropna())
+        macd_stress = pd.Series(macd_norm, index=macd_histogram.dropna().index)
+        
+        # 3. Price vs MA200 (장기 추세 이탈)
+        ma_200 = spy_close.rolling(window=200).mean()
+        price_deviation = (spy_close - ma_200) / ma_200 * 100  # Percentage
+        
+        # 과도한 상승(>10%) 후 반전을 포착
+        deviation_stress = (price_deviation / 5).clip(-3, 3)  # Normalize
+        
+        # 통합
+        momentum_df = pd.DataFrame({
+            'rsi_stress': rsi_stress,
+            'macd_stress': macd_stress,
+            'price_deviation': deviation_stress
+        }, index=spy_close.index).dropna()
+        
+        # 평균 모멘텀 신호
+        momentum_signal = momentum_df.mean(axis=1)
+        
+        print(f"[OK] 모멘텀 데이터: {len(momentum_signal)} 포인트")
+        return momentum_signal
     
     # ============================================
     # LAYER 3.8: Liquidity Microstructure (New)
