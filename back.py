@@ -775,75 +775,124 @@ class StructuralRiskDetector2026:
             return pd.DataFrame()
 
     # ============================================
-    # LAYER 4 (복구): HMM 기반 국면 탐지
+    # LAYER 4 (복구): HMM 기반 국면 탐지 - Paper Aligned (Structural)
     # ============================================
-    def get_market_regime_hmm(self, spy_df):
+    def get_market_regime_hmm(self, spy_df, structural_features=None):
         """
-        HMM을 이용한 3단계 시장 국면 탐지 (캐싱 기능 추가)
-        - 0: Normal
-        - 1: Overheated
-        - 2: Stress
+        [Paper Refinement] Structural HMM (3-State)
+        - 기존: Price Return / Volatility에 의존 (비선형성 못잡음)
+        - 개선: Volatility / Skewness / Correlation 3대장 사용
+        - 목표: "가격은 오르는데(Low Vol), 내부가 썩어가는(Neg Skew, High Corr)" 상태를 'Overheated'로 정의
         """
-        # [NEW] 캐시 파일 경로 설정
-        cache_file = "hmm_model_cache.pkl"
+        # 캐시 이름 변경 (구조 변경됨)
+        cache_file = "hmm_structural_v1.pkl"
         
         # 데이터의 마지막 날짜(또는 길이)를 확인해서, 데이터가 바뀌었으면 다시 학습
         if isinstance(spy_df, pd.DataFrame):
             last_date = spy_df.index[-1].strftime('%Y-%m-%d')
         else:
-            # Fallback for Series
             last_date = spy_df.index[-1].strftime('%Y-%m-%d')
 
         # [1] 캐시 확인: 파일이 있고, 데이터가 최신이면 불러오기
         if os.path.exists(cache_file):
             try:
                 cached_data = joblib.load(cache_file)
-                # 저장된 데이터의 날짜와 현재 데이터 날짜가 같으면 로딩
                 if cached_data.get('last_date') == last_date:
-                    print("[INFO] HMM 모델을 캐시에서 불러옵니다. (학습 건너뜀 🚀)")
-                    
-                    saved_signal = cached_data['signal']
-                    # 인덱스 길이를 더 안전하게 맞춤
-                    return saved_signal.reindex(spy_df.index).ffill().dropna()
-                    
+                    print("[INFO] Structural HMM 모델을 캐시에서 불러옵니다. (학습 건너뜀 🚀)")
+                    return cached_data['signal'].reindex(spy_df.index).ffill().dropna()
             except Exception as e:
                 print(f"[WARN] 캐시 로딩 실패, 다시 학습합니다: {e}")
 
-        # [2] 캐시가 없거나 날짜가 다르면 -> HMM 학습 시작 (기존 로직)
-        print("[INFO] HMM 3단계 국면(과열/노멀/스트레스) 분석 및 학습 중... (시간 소요됨 🐢)")
+        # [2] 학습 시작
+        print("[INFO] Structural HMM(Vol/Skew/Corr) 국면 탐지 학습 시작...")
         
         try:
-            # 1. 데이터 준비
+            # 1. 기본 데이터 준비
             if isinstance(spy_df, pd.DataFrame) and 'Close' in spy_df.columns:
-                data = spy_df['Close'].pct_change().dropna()
+                src = spy_df['Close']
             else:
-                data = spy_df.pct_change().dropna()
+                src = spy_df
                 
-            vol = data.rolling(20).std().dropna()
-            ret = data.rolling(20).mean().dropna()
+            # Base Feature: Volatility (반응속도 빠른 21일)
+            vol = src.pct_change().rolling(21).std().dropna()
             
-            common_idx = vol.index.intersection(ret.index)
-            X = np.column_stack([ret.loc[common_idx].values, vol.loc[common_idx].values])
+            # Structural Features: Skewness, Correlation
+            if structural_features is not None:
+                # 이미 계산된 Skew/Corr 사용
+                skew = structural_features.get('skew_66', src.pct_change().rolling(66).skew())
+                corr = structural_features.get('corr_bond', pd.Series(0, index=src.index)) # 없으면 0
+                absorb = structural_features.get('absorb_ratio', pd.Series(0, index=src.index))
+            else:
+                # Fallback (직접 계산)
+                ret = src.pct_change()
+                skew = ret.rolling(66).skew()
+                corr = pd.Series(0, index=src.index) # 데이터 없으면 0 처리
+                absorb = pd.Series(0, index=src.index)
+
+            # 교집합 인덱스
+            common_idx = vol.index.intersection(skew.index).intersection(corr.index)
             
+            # Feature 조합 (X)
+            # 1. Volatility (시장 공포)
+            # 2. Skewness (꼬리 위험 - 음수일수록 위험)
+            # 3. Correlation (전염 위험 - 높을수록 위험)
+            # 4. Absorption (시스템 동조화)
+            
+            # 데이터 스케일링이 필요할 수 있으나 HMM은 분포를 배우므로 원본도 OK.
+            # 하지만 Skew는 -3 ~ +3, Vol은 0.01 ~ 0.05 단위가 다르므로 표준화 권장.
+            # 여기서는 간단히 하기 위해 Raw 값 사용하되, 의미적으로 묶음.
+            
+            X_df = pd.DataFrame({
+                'vol': vol, 
+                'skew': skew, 
+                'corr': corr,
+                'absorb': absorb
+            }, index=common_idx).dropna()
+            
+            X = X_df.values
+
             from hmmlearn.hmm import GaussianHMM
+            # 논문은 2-State or 3-State. 우리는 3-State (Quiet, Fragile, Stress)
             model = GaussianHMM(n_components=3, covariance_type="full", n_iter=1000, random_state=42)
             model.fit(X)
             hidden_states = model.predict(X)
             
             # (라벨링 로직: Stress/Overheated/Normal 찾기)
+            # State 속성 파악을 위해 평균값 확인
+            # Vol(0), Skew(1), Corr(2), Absorb(3)
             means = model.means_
-            stress_idx = np.argmax(means[:, 1]) # 변동성 최대
-            remaining_indices = [i for i in range(3) if i != stress_idx]
-            overheated_idx = remaining_indices[np.argmax(means[remaining_indices, 0])] # 나머지 중 수익률 최대
-            normal_idx = [i for i in remaining_indices if i != overheated_idx][0]
+            
+            # 1. Stress: 변동성(Vol)이 가장 큰 상태
+            stress_idx = np.argmax(means[:, 0]) 
+            
+            # 2. Overheated (Fragile): 
+            # Stress가 아니면서, "Skewness가 가장 낮거나(음수)" OR "Absorption이 가장 높은" 상태
+            remaining = [i for i in range(3) if i != stress_idx]
+            
+            # 점수판: (Skew 낮을수록 점수 높음) + (Absorb 높을수록 점수 높음)
+            # Skew는 -값이 위험하므로 mean * -1 하면 높을수록 위험
+            # 정규화해서 비교 필요하지만 약식으로:
+            scores = {}
+            for i in remaining:
+                # Skew가 낮을수록(=음수 클수록) 위험 -> -mean
+                score_skew = -means[i, 1] 
+                # Correlation 높을수록 위험 -> +mean
+                score_corr = means[i, 2]
+                scores[i] = score_skew + score_corr # 단순 합산 판별
+                
+            overheated_idx = max(scores, key=scores.get)
+            
+            # 3. Normal: 나머지
+            normal_idx = [i for i in remaining if i != overheated_idx][0]
             
             mapping = {normal_idx: 0, overheated_idx: 1, stress_idx: 2}
             mapped_states = np.array([mapping[s] for s in hidden_states])
             
             regime_signal = pd.Series(mapped_states, index=common_idx, name='hmm_regime')
             
+            print(f"[INFO] HMM 상태 정의 완료: Normal({normal_idx}), Fragile({overheated_idx}), Stress({stress_idx})")
+            
             # [3] 결과 저장 (캐싱)
-            print(f"[INFO] HMM 학습 완료. 결과를 '{cache_file}'에 저장합니다.")
             joblib.dump({'last_date': last_date, 'signal': regime_signal}, cache_file)
             
             return regime_signal
@@ -1006,20 +1055,23 @@ class StructuralRiskDetector2026:
         except Exception as e:
             print(f"[WARN] Net Liquidity timezone conversion error: {e}")
 
-        # [복구] HMM 국면 탐지
-        hmm_signal = self.get_market_regime_hmm(spy_df)
-        
-        # [NEW] Paper Alignment Features 계산
+        # [NEW] Paper Alignment Features 계산 (먼저 실행!)
         paper_dfs = self.get_paper_features(spy_close, start_date)
-        # Timezone 정리
         if paper_dfs.index.tz is not None: paper_dfs.index = paper_dfs.index.tz_localize(None)
 
-        # [NEW] Absorption Ratio 계산
+        # [NEW] Absorption Ratio 계산 (먼저 실행!)
         ar_dfs = self.get_absorption_ratio(start_date)
         if ar_dfs.index.tz is not None: ar_dfs.index = ar_dfs.index.tz_localize(None)
-        
-        # 인덱스 맞추기/reindex
         ar_dfs = ar_dfs.reindex(spy_close.index).ffill()
+
+        # [복구] HMM 국면 탐지 - Paper Structural Features 주입
+        # Skew, Corr, Absorb Ratio를 사용하여 구조적 과열을 진단
+        structural_feats = {
+            'skew_66': paper_dfs['ret_skew_66'],
+            'corr_bond': paper_dfs['corr_spy_tlt'],
+            'absorb_ratio': ar_dfs['absorption_ratio']
+        }
+        hmm_signal = self.get_market_regime_hmm(spy_df, structural_features=structural_feats)
 
 
         # ==============================================================================
