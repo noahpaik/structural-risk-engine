@@ -882,8 +882,8 @@ class StructuralRiskDetector2026:
                              (liq_drain.iloc[i] * 2)
             
             if is_stress.iloc[i]:
-                # [CASE 1] 이미 터짐 (Stress) -> 리셋
-                current_strain = 0
+                # [CASE 1] 이미 터짐 (Stress) -> 천천히 리셋
+                current_strain = max(0, current_strain - 2)
                 
             elif is_overheated.iloc[i]:
                 # [CASE 2] 과열 상태 (Overheated)
@@ -994,19 +994,33 @@ class StructuralRiskDetector2026:
             print(f"[WARN] VIX load failed for label generation: {e}")
             vix_spike = pd.Series(False, index=returns.index)
 
-        # [OK] 엄격해진 레이블 (Option 1 적용)
-        # 1. 향후 20일 -10% (기존 -8%에서 강화)
-        future_dd_20 = returns.rolling(20).apply(
-            lambda x: (1 + x).cumprod().min() - 1
-        ).shift(-20)
+        # ==============================================================================
+        # [수정] 폭락 정의 변경: "종가(Close) 기준이 아니라 최저점(Low) 기준 MDD"
+        # 논리: "지금 안 팔면, 향후 20일 안에 내 계좌가 장중 포함 -10% 이상 깨지는가?"
+        # ==============================================================================
+
+        # 1. 향후 20일간의 최저점(Low) 탐색 (Forward Looking)
+        # FixedForwardWindowIndexer를 써야 미래 데이터를 당겨올 수 있습니다.
+        indexer = pd.api.indexers.FixedForwardWindowIndexer(window_size=20)
         
-        # 2. 향후 10일 -7% AND VIX 급등
-        future_10d = returns.rolling(10).sum().shift(-10)
+        # spy_df['Low']가 필요합니다. (위에서 spy_df는 이미 로드되어 있음)
+        future_low = spy_df['Low'].rolling(window=indexer).min()
         
-        # 통합
+        # 2. 현재 종가 대비 최대 낙폭 (Maximum Drawdown from Current Close)
+        # "오늘 종가에 샀는데, 20일 안에 장중 최저점이 -10%를 찍으면 폭락이다."
+        # (종가가 회복되어 마감했더라도, 장중에 죽다 살아났으면 위험으로 간주)
+        future_mdd = (future_low - spy_df['Close']) / spy_df['Close']
+        
+        # 3. 라벨 생성
+        # 기준: 장중 변동성 고려하여 -10% (0.10) 정도로 설정
+        # (Low 기준이므로 Close 기준보다 수치가 더 깊게 나옵니다)
+        crash_labels = (future_mdd < -0.10).astype(int)
+
+        # [옵션] VIX 급등 조건도 살리고 싶다면 아래와 같이 OR 조건으로 결합
+        future_10d_sum = returns.rolling(window=indexer).sum() # 향후 10일 단순 합
         crash_labels = (
-            (future_dd_20 < -0.05) | # [RELAXED] -10% -> -7% 로 완화
-            ((future_10d < -0.05) & vix_spike)
+            (future_mdd < -0.10) | 
+            ((future_10d_sum < -0.07) & vix_spike)
         ).astype(int)
         
         # ==============================================================================
