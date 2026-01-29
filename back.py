@@ -1507,7 +1507,11 @@ class StructuralRiskDetector2026:
             print("[WARN] 먼저 모델 학습 필요")
             return
         
-        X = df.drop('crash', axis=1)
+        # [Fix] 학습 때 제외한 컬럼(사모신용 등)은 예측 시에도 제외해야 함
+        # train_model에서 drop_cols = ['crash', 'private_credit', 'context_private_credit'] 사용함
+        drop_cols = ['crash', 'private_credit', 'context_private_credit']
+        X = df.drop(columns=drop_cols, errors='ignore')
+        
         current_features = X.iloc[-1:].copy()
         
         # 예측 (Smoothing 적용을 위해 최근 100일 사용)
