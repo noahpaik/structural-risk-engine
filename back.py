@@ -480,7 +480,7 @@ class StructuralRiskDetector2026:
     # LAYER 3.9: FX Carry Risk (Global Shock)
     # ============================================
     
-    def get_fx_carry_risk(self, start_date):
+    def get_fx_carry_risk(self):
         """
         [수정] FX Volatility Risk (환율 변동성 위기)
         기존: 엔화 강세 + 주가 하락 (Carry Trade Unwind) -> 이벤트성
@@ -492,7 +492,7 @@ class StructuralRiskDetector2026:
         tickers = ['DX-Y.NYB', 'JPY=X']
         print(f"   [INFO] FX 변동성 데이터 로드 중... ({tickers})")
         
-        fx_data = yf.download(tickers, start=start_date, progress=False)['Close']
+        fx_data = yf.download(tickers, start=self.start_date, progress=False)['Close']
         fx_data = fx_data.ffill().dropna()
 
         # 2. 변동성(Volatility) 계산
@@ -772,7 +772,7 @@ class StructuralRiskDetector2026:
             print(f"[WARN] Liquidity timezone conversion error: {e}")
         
         # [OK] NEW: Calculate FX Carry Risk
-        fx_carry_signal = self.get_fx_carry_risk(start_date)
+        fx_carry_signal = self.get_fx_carry_risk()
         
         try:
             if fx_carry_signal.index.tz is not None:
@@ -843,16 +843,11 @@ class StructuralRiskDetector2026:
         # Threshold를 살짝 낮춰서(-0.8) 민감하게 반응하도록 함
         bond_panic = (bond_signal > 0.8).astype(int)
         liq_drain = (net_liq_signal < -0.8).astype(int)
-        # [NEW] 환율(FX) 트리거도 민감하게 (0.8)
+        # [NEW] 환율(FX) 트리거도 민감하게 (-0.8)
         fx_panic = (fx_carry_signal < 0.8).astype(int)
         # [NEW] 변동성 발작 추가 (사장님 의견 반영)
         # VIX가 평소보다 튀면(Z-score > 1.0) 무조건 압력 채움
         vol_panic = (vol_signal > 1.0).astype(int)
-        # [NEW] 음수 값 차단 (Negative Z-score Filtering)
-        # "음수(안전)일 때는 계산에 영향을 주지 마라" -> 0으로 변환
-        # FX 변동성과 사모신용 스트레스는 '양수'일 때만 위험 압력으로 작용
-        fx_risk_input = fx_carry_signal.clip(lower=0)
-        credit_risk_input = private_credit_signal.clip(lower=0)
         
         # 인덱스 정렬 
         bond_panic = bond_panic.reindex(hmm_signal.index).fillna(0)
@@ -860,8 +855,6 @@ class StructuralRiskDetector2026:
         fx_panic = fx_panic.reindex(hmm_signal.index).fillna(0)
         vol_panic = vol_panic.reindex(hmm_signal.index).fillna(0)
         tcpc_panic = tcpc_panic.reindex(hmm_signal.index).fillna(0)
-        fx_risk_input = fx_risk_input.reindex(hmm_signal.index).fillna(0)
-        credit_risk_input = credit_risk_input.reindex(hmm_signal.index).fillna(0)
         
         for i in range(len(hmm_signal)):
             
@@ -870,7 +863,7 @@ class StructuralRiskDetector2026:
             # [수정] 가속도 공식: 변동성(Vol)이 튀면 압력을 3배로 빨리 채움
             # [수정] 사모신용(TCPC)이 흔들리면 뇌관 건드린 것임 -> 가중치 4
             external_shock = (bond_panic.iloc[i] * 3) + \
-                             (fx_panic.iloc[i] * 5) + \
+                             (fx_panic.iloc[i] * 3) + \
                              (tcpc_panic.iloc[i] * 4) + \
                              (vol_panic.iloc[i] * 3) + \
                              (liq_drain.iloc[i] * 2)
@@ -1284,7 +1277,7 @@ class StructuralRiskDetector2026:
         
         # [수정] 오경보를 줄이기 위해 다시 상향
         # [TUNING] 0.45 -> 0.42 (신호가 강해졌으므로 살짝 낮춰도 됨)
-        optimal_threshold = 0.35
+        optimal_threshold = 0.42
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
@@ -1694,7 +1687,7 @@ if __name__ == "__main__":
     )
     
     if df is not None and not df.empty:
-        # 모델 학습 (2023-01-01 기준 분할: Training 2002-2023, Valid 2024-2026)
+        # 모델 학습 (2023-01-01 기준 분할: Training 2002-2022, Valid 2023-2026)
         detector.train_model(df, split_date='2023-01-01')
         
         # 현재 위험 평가
