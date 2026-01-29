@@ -1201,10 +1201,11 @@ class StructuralRiskDetector2026:
     
     def train_model(self, df, split_date='2024-01-01'):
         """
-        [논문 기반 최종 수정] Ensemble Model (RF + XGBoost)
-        - Sheikh Sadik (2024) 논문의 Hyperparameters 적용
-        - 두 모델의 장점을 결합한 Soft Voting Ensemble 구현
-        - [수정] Hold-out Validation (split_date 기준)
+        [최종 튜닝] Ensemble Model (Balanced)
+        - AUC 0.80 이상을 유지하면서 Recall을 확보하는 균형 설정
+        - Threshold 현실화 (0.60 -> 0.25)
+        - 모델 규제 완화 (너무 겁먹지 않게)
+        - [유지] Hold-out Validation (split_date 기준) to prevent app crash
         """
         from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
         from sklearn.ensemble import RandomForestClassifier, VotingClassifier
@@ -1212,7 +1213,7 @@ class StructuralRiskDetector2026:
         from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score, confusion_matrix, roc_auc_score
         
         print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 ({split_date} 기준 Hold-out 검증)")
+        print(f"[AI] 모델 학습 시작 ({split_date} 기준 Hold-out 검증 - Balanced Mode)")
         
         # 1. 데이터 준비 (라벨 있는 것만)
         df_labeled = df.dropna(subset=['crash']).sort_index()
@@ -1237,50 +1238,49 @@ class StructuralRiskDetector2026:
             print("[WARN] 검증 데이터가 없습니다! 최근 데이터를 포함하거나 split_date를 조정하세요.")
         
         # 3. 시계열 교차 검증 (학습 데이터 내부에서 수행)
-        tscv = TimeSeriesSplit(n_splits=3) # 4 -> 3으로 조정 (데이터 양 고려)
+        tscv = TimeSeriesSplit(n_splits=3)
         
         # ======================================================================
-        # [Model 1] Random Forest
+        # [Model 1] Random Forest (규제 완화)
         # ======================================================================
         rf_params = {
             'n_estimators': [200, 500],
-            'max_features': ['sqrt'], # 0.5 제거 (과적합 방지)
-            'max_depth': [5, 10, 15],
-            'min_samples_leaf': [0.05, 0.1],
-            'bootstrap': [True],
+            'max_depth': [10, 20, None],  # [수정] 깊이 제한을 조금 품 (더 똑똑하게)
+            'min_samples_leaf': [0.01, 0.05], # [수정] 잎사귀 크기 줄임 (디테일 감지)
+            'max_features': ['sqrt'],
             'class_weight': ['balanced']
         }
         
-        print("\n[Training] 1. Random Forest 최적화 중...")
+        print("\n[Training] 1. Random Forest (Balanced) 최적화 중...")
         rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
         rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
         rf_search.fit(X_train, y_train)
         best_rf = rf_search.best_estimator_
         
         # ======================================================================
-        # [Model 2] XGBoost
+        # [Model 2] XGBoost (규제 완화)
         # ======================================================================
         # Class Weight 계산 (Scale Pos Weight)
         neg, pos = np.bincount(y_train)
         scale_pos_weight = neg / pos if pos > 0 else 1.0
         
         xgb_params = {
-            'n_estimators': [100, 200],
-            'learning_rate': [0.01, 0.05], # [수정] 천천히 학습 (0.1, 0.2 제거)
-            'max_depth': [3, 5],           # [수정] 아주 얕게 (복잡한 패턴 무시)
-            'subsample': [0.6, 0.8],
-            'colsample_bytree': [0.6, 0.8],
-            'scale_pos_weight': [1, 3]     # [수정] 가중치 축소
+            'n_estimators': [100, 200, 300],
+            'learning_rate': [0.05, 0.1],  # [수정] 학습 속도 정상화 (너무 느리면 못 배움)
+            'max_depth': [3, 5, 7],        # [수정] 깊이 약간 증가
+            'subsample': [0.8, 1.0],
+            'colsample_bytree': [0.8, 1.0],
+            'scale_pos_weight': [3, 5]     # [수정] 폭락(1)에 가중치 더 부여
         }
         
-        print("[Training] 2. XGBoost 최적화 중...")
+        print("[Training] 2. XGBoost (Balanced) 최적화 중...")
         xgb_base = XGBClassifier(eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
         xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
         xgb_search.fit(X_train, y_train)
         best_xgb = xgb_search.best_estimator_
         
         # ======================================================================
-        # [Final] Voting Classifier
+        # [Final] Voting Classifier (앙상블)
         # ======================================================================
         print("[Training] 3. 앙상블(Voting) 모델 통합 중...")
         
@@ -1297,9 +1297,12 @@ class StructuralRiskDetector2026:
         print(f"   >>> Random Forest Best F1: {rf_search.best_score_:.4f}")
         print(f"   >>> XGBoost Best F1: {xgb_search.best_score_:.4f}")
         
-        # [핵심 수정] Threshold 대폭 상향
-        # Precision(정확도)을 높이기 위해 "확실한 놈만 쏴라" 명령
-        optimal_threshold = 0.60 
+        # [핵심 수정] Threshold 현실화
+        # 차트상 확률이 0.4~0.5 정도까지 오르므로, 0.25면 충분히 안전하면서도 잘 잡음
+        optimal_threshold = 0.25 
+        
+        print(f"   >>> Applied Threshold: {optimal_threshold} (Targeting Recall)")
+        
         self.model = voting_clf
         self.threshold = optimal_threshold
         
