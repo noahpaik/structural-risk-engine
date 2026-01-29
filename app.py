@@ -628,7 +628,27 @@ elif page == "ℹ️ About":
         """)
         
     st.markdown("---")
-    st.subheader("🛠️ Model Architecture")
+    
+    st.header("🛠️ 상세 피처 명세서 (Data & Logic)")
+    st.markdown("""
+    이 모델이 사용하는 주요 피처들의 데이터 원천과 계산 로직입니다.
+    
+    | Layer / Feature | 입력 데이터 (Data Source) | 계산 로직 및 의도 (Logic & Rationale) |
+    | :--- | :--- | :--- |
+    | **1. Volatility** | `^VIX` (CBOE Volatility Index) | **공포 지수**. 252일 이동평균 대비 현재 수준(Z-score) 측정. 높을수록 시장 공포 극대화. |
+    | **2. Bond Stress** | `^TNX` (10Y), `SHY` (2Y Proxy) | **장단기 금리차**. 수익률 곡선 역전(Inversion) 후 급격한 스티프닝(Steepening) 탐지. |
+    | **3. Macro (Eco)** | `UNRATE` (실업률), `RECPRO` (침체확률) | **샴의 법칙(Sahm Rule)** 변형. 실업률 이동평균이 급격히 상승하는 구간 포착. |
+    | **4. Momentum** | `SPY` (S&P 500 Price) | **RSI & MA Divergence**. 가격이 200일 이동평균선보다 얼마나 과도하게 벌어졌는지 측정. |
+    | **5. Liquidity** | `SPY` (OHLCV High/Low/Vol) | **Amihud & Corwin-Schultz**. 거래량 대비 가격 변화폭. 수치가 튀면 "팔 사람은 많은데 살 사람이 없는" 상태. |
+    | **6. FX Carry** | `JPY=X` (엔/달러 환율) | **캐리 트레이드 청산**. 엔화의 변동성이 급증하면 글로벌 자금 회수(Margin Call) 신호. |
+    | **7. Net Liquidity** | `WALCL` (Fed 자산), `TGA`, `RRP` | **연준 순유동성**. `Fed 자산 - (재무부 계좌 + 역레포)`. 실제 시장에 풀려있는 달러 총량 측정. |
+    | **8. Paper Features** | `SPY`, `TLT` (20Y Treasury) | **Skewness**: 수익률 분포가 왼쪽으로 찌그러짐(급락 위험). <br> **Correlation**: 주식과 국채가 같이 떨어지면(양의 상관관계) 시스템 위기. |
+    | **9. Absorption Ratio** | 9개 섹터 ETF (`XLK`, `XLF` 등) | **PCA(주성분분석)**. 9개 섹터가 2개의 요인에 의해 몇 %나 설명되는가? 높을수록 **동조화(위기 전조)**. |
+    | **10. Structural HMM** | `Vol`, `Skew`, `Corr`, `Absorb` | **비지도 학습**. 단순히 가격만 보는 게 아니라, 위 4가지 구조적 지표를 종합해 **'Fragile State'** 판별. |
+    """)
+    
+    st.markdown("---")
+    st.subheader("⚙️ System Architecture Overview")
     st.code("""
     [Input Data] 
       ├── Market Prices (SPY, TLT, VIX)
