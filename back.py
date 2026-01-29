@@ -1277,7 +1277,7 @@ class StructuralRiskDetector2026:
         
         # [수정] 오경보를 줄이기 위해 다시 상향
         # [TUNING] 0.45 -> 0.42 (신호가 강해졌으므로 살짝 낮춰도 됨)
-        optimal_threshold = 0.42
+        optimal_threshold = 0.35
         print(f"[TARGET] Fixed Threshold: {optimal_threshold:.3f}")
         
         self.threshold = optimal_threshold
