@@ -165,31 +165,49 @@ if page == "🏠 Home - 현재 위험":
             st.plotly_chart(fig_gauge, width="stretch")
         
         with col3:
+            # [수정] 권장 주식 비중 -> 과열 압력 (HMM Strain)
+            hmm_strain_val = df['hmm_strain'].iloc[-1] if 'hmm_strain' in df.columns else 0.0
+            
             st.metric(
-                "권장 주식 비중",
-                f"{current['equity_weight']:.0%}"
+                "과열 압력 (HMM Strain)",
+                f"{hmm_strain_val:.2f}",
+                delta="주의" if hmm_strain_val > 1.0 else "안정",
+                delta_color="inverse"
             )
-            # 파이 차트
-            fig_pie = go.Figure(data=[go.Pie(
-                labels=['주식', '현금/채권'],
-                values=[current['equity_weight'], 1 - current['equity_weight']],
-                marker_colors=['steelblue', 'lightgray']
-            )])
-            fig_pie.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20), showlegend=False)
-            st.plotly_chart(fig_pie, width="stretch")
+            
+            # 게이지 차트 (Strain)
+            fig_strain = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=hmm_strain_val,
+                domain={'x': [0, 1], 'y': [0, 1]},
+                gauge={
+                    'axis': {'range': [0, 3]}, # 보통 Z-score 3 이상이면 극단적
+                    'bar': {'color': "darkred" if hmm_strain_val > 1.5 else "orange" if hmm_strain_val > 0.5 else "green"},
+                    'steps': [
+                        {'range': [0, 0.5], 'color': "lightgreen"},
+                        {'range': [0.5, 1.5], 'color': "yellow"},
+                        {'range': [1.5, 3], 'color': "lightcoral"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': 1.5 # Critical Threshold
+                    }
+                }
+            ))
+            fig_strain.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20))
+            st.plotly_chart(fig_strain, width="stretch")
         
         st.markdown("---")
         
         # 주요 신호 강도
-        st.subheader("📡 현재 신호 강도 (Top 7)")
+        st.subheader("📡 현재 신호 강도 (Top 5)")
         current_features = df.drop('crash', axis=1).iloc[-1]
         
-        # [수정] 모니터링 핵심 지표 Top 7 (Private Credit은 Tab 2로 갔지만, 전체 비교를 위해 남겨둘 수도 있고 뺄 수도 있음. 
-        # 사용자가 "Feature Importance 차트에서 private_credit이 사라진 것을 확인하세요!"라고 했지만, 
-        # 여기는 Signal Chart임. AI가 안쓰더라도 신호 자체는 존재함. 일단 둠.)
+        # [수정] 모니터링 핵심 지표: private_credit, hmm_strain 제거 (요청사항)
         base_features = [
             'volatility', 'bond_stress', 'eco_surprise', 
-            'fx_carry', 'private_credit', 'net_liquidity', 'hmm_strain'
+            'fx_carry', 'net_liquidity' 
         ]
         
         feature_values = {feat: current_features[feat] for feat in base_features if feat in current_features}
