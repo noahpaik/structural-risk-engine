@@ -1038,6 +1038,18 @@ class StructuralRiskDetector2026:
             private_credit_signal = pd.Series(0, index=spy_close.index)
             tcpc_panic = pd.Series(0, index=spy_close.index)
 
+        # [NEW] Paper Alignment Features 계산 (Skew, Kurtosis, Correlation)
+        paper_dfs = self.get_paper_features(spy_close, start_date)
+        # Timezone 정리
+        if paper_dfs.index.tz is not None: paper_dfs.index = paper_dfs.index.tz_localize(None)
+
+        # [NEW] Absorption Ratio 계산 (Systemic Risk)
+        ar_dfs = self.get_absorption_ratio(start_date)
+        if ar_dfs.index.tz is not None: ar_dfs.index = ar_dfs.index.tz_localize(None)
+        
+        # 인덱스 맞추기/reindex
+        ar_dfs = ar_dfs.reindex(spy_close.index).ffill()
+
         # [LOGIC] HMM 모듈 제거 -> 'Pure Macro Stress' 모드로 전환
         print("[Logic] HMM 모듈 제거 -> 'Pure Macro Stress' 모드로 전환합니다.")
         
