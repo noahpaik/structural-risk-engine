@@ -857,6 +857,10 @@ class StructuralRiskDetector2026:
         tcpc_panic = tcpc_panic.reindex(hmm_signal.index).fillna(0)
         
         for i in range(len(hmm_signal)):
+            # 1. 추세 밸브 확인
+            current_price = spy_close.iloc[i]
+            trend_line = spy_ma50.iloc[i]
+            is_bull_market = (current_price > trend_line) if not np.isnan(trend_line) else False
             
             # [NEW] 외부 충격 가속도 계산 (HMM 상태와 무관하게 계산)
             # 환율(FX)에 가장 높은 가중치 5 부여 (2025년 타겟팅)
@@ -869,23 +873,26 @@ class StructuralRiskDetector2026:
                              (liq_drain.iloc[i] * 2)
             
             if is_stress.iloc[i]:
-                # [CASE 1] 이미 터짐 (Stress) -> 천천히 리셋
-                current_strain = max(0, current_strain - 2)
+                # [핵심 수정 1] 폭락 발생(Stress) -> 압력 즉시 소멸
+                # 기존: -2씩 차감 (너무 느림) -> 수정: 0으로 초기화 (폭발했으니까!)
+                current_strain = 0
+                
+            elif is_bull_market:
+                # [핵심 수정 2] 상승장(Bull) -> 압력 해제
+                # 상승장에서는 압력을 0으로 유지 (모멘텀이 압력을 이김)
+                current_strain = 0 
                 
             elif is_overheated.iloc[i]:
-                # [CASE 2] 과열 상태 (Overheated)
-                # 기본적으로 +1씩 차오르고, 외부 충격 있으면 더 빨리 차오름
+                # 과열 상태 + 하락 추세 -> 압력 축적
                 current_strain += (1 + external_shock)
                 
             else:
-                # [CASE 3] 평온/횡보 상태 (Normal)
-                # "HMM은 평온해 보여도, 밖에서(FX/Vol) 난리가 났으면 압력을 채워라!"
-                
+                # Normal 상태 + 하락 추세
+                # 외부 충격이 있을 때만 압력 증가
                 if external_shock > 0:
-                    # 겉은 평온하지만 속은 썩어들어가는 중 -> 압력 증가
-                    current_strain += external_shock 
+                    current_strain += external_shock
                 else:
-                    # 진짜 아무 일도 없음 -> 쿨링
+                    # 아무 일 없으면 자연 냉각
                     current_strain = max(0, current_strain - 1)
             
             strain_list.append(current_strain)
