@@ -772,7 +772,7 @@ class StructuralRiskDetector2026:
             print(f"[WARN] Liquidity timezone conversion error: {e}")
         
         # [OK] NEW: Calculate FX Carry Risk
-        fx_carry_signal = self.get_fx_carry_risk()
+        fx_carry_signal = self.get_fx_carry_risk(start_date)
         
         try:
             if fx_carry_signal.index.tz is not None:
