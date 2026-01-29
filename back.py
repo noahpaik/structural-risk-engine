@@ -1405,6 +1405,69 @@ class StructuralRiskDetector2026:
         y = df_labeled['crash']
         
         # ======================================================================
+        # [NEW] Double-Filter Feature Selection (Sheikh Sadik 2024)
+        # 1. Point Biserial Correlation (Linear)
+        # 2. Mutual Information (Non-linear)
+        # -> 교집합(Intersection)만 사용
+        # ======================================================================
+        print("\n[Feature Selection] Double-Filter 적용 중...")
+        from scipy.stats import pointbiserialr
+        from sklearn.feature_selection import mutual_info_classif
+        
+        # 1. Point Biserial
+        pb_scores = {}
+        for col in X.columns:
+            try:
+                # NaNs/Infs 제거 후 계산
+                valid_mask = np.isfinite(X[col]) & np.isfinite(y)
+                if valid_mask.sum() > 10:
+                    corr, _ = pointbiserialr(y[valid_mask], X.loc[valid_mask, col])
+                    pb_scores[col] = abs(corr) if not np.isnan(corr) else 0
+                else:
+                    pb_scores[col] = 0
+            except:
+                pb_scores[col] = 0
+                
+        # 2. Mutual Information
+        try:
+            # MI는 계산 비용이 좀 듦
+            mi_scores = mutual_info_classif(X.fillna(0), y, random_state=42)
+            mi_dict = dict(zip(X.columns, mi_scores))
+        except Exception as e:
+            print(f"   [WARN] MI 계산 실패: {e}")
+            mi_dict = {col: 0 for col in X.columns}
+            
+        # 3. Top 50% Selection
+        n_features = len(X.columns)
+        n_select = int(n_features * 0.5)
+        
+        sorted_pb = sorted(pb_scores.items(), key=lambda x: x[1], reverse=True)
+        top_pb = set([x[0] for x in sorted_pb[:n_select]])
+        
+        sorted_mi = sorted(mi_dict.items(), key=lambda x: x[1], reverse=True)
+        top_mi = set([x[0] for x in sorted_mi[:n_select]])
+        
+        # 4. Intersection (교집합)
+        selected_features = list(top_pb.intersection(top_mi))
+        
+        # [Force Keep] 핵심 변수 강제 포함 (이건 잃으면 안됨)
+        force_keep = ['absorption_ratio', 'absorb_delta', 'hmm_strain', 'liquidity', 'bond_stress']
+        for f in force_keep:
+            if f in X.columns and f not in selected_features:
+                selected_features.append(f)
+                
+        # 중복 제거
+        selected_features = list(set(selected_features))
+        
+        print(f"   >>> 전체 변수: {n_features}개")
+        print(f"   >>> 선택된 변수: {len(selected_features)}개 (Double Filter + Force Keep)")
+        print(f"   >>> 주요 탈락: {list(set(X.columns) - set(selected_features))[:5]}")
+        
+        # 데이터 교체
+        X = X[selected_features]
+        print(f"   [INFO] 학습 데이터를 선택된 변수로 한정했습니다.")
+        
+        # ======================================================================
         # [NEW] 샘플 가중치(Sample Weight) 생성 - Crisis Focus
         # ======================================================================
         # 1) 기본 가중치 1.0 설정
