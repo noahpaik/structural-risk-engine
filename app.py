@@ -109,95 +109,155 @@ page = st.sidebar.radio(
 # Page 1: Home - 현재 위험 평가
 # ==========================================
 if page == "🏠 Home - 현재 위험":
-    st.title("📊 실시간 위험 평가")
-    st.markdown("---")
+    st.title("🛡️ Structural Risk Engine (Dual-Core)")
     
-    # 현재 평가
-    current = detector.get_current_assessment(df)
+    # [NEW] 탭 분리
+    tab1, tab2 = st.tabs(["🚀 메인: 폭락 감지 모델", "🔒 서브: 사모신용(Private Credit)"])
     
-    # 상단 메트릭
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        risk_emoji = {"Normal": "🟢", "Elevated": "🟡", "High": "🔴"}
-        st.metric(
-            "위험 등급",
-            current['risk_level'],
-            delta=None,
-            delta_color="inverse"
-        )
-        st.markdown(f"### {risk_emoji.get(current['risk_level'], '⚪')}")
-    
-    with col2:
-        st.metric(
-            "폭락 확률 (20일)",
-            f"{current['probability']:.1%}"
-        )
-        # 게이지 차트
-        fig_gauge = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=current['probability'] * 100,
-            domain={'x': [0, 1], 'y': [0, 1]},
-            gauge={
-                'axis': {'range': [0, 100]},
-                'bar': {'color': "darkred" if current['probability'] > 20 else "orange" if current['probability'] > 10 else "green"},
-                'steps': [
-                    {'range': [0, 10], 'color': "lightgreen"},
-                    {'range': [10, 20], 'color': "yellow"},
-                    {'range': [20, 100], 'color': "lightcoral"}
-                ],
-                'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': detector.threshold * 100
+    # ==========================================================================
+    # [TAB 1] 기존 메인 대시보드 (AI 예측)
+    # ==========================================================================
+    with tab1:
+        st.subheader("📉 Market Crash Probability (AI Model)")
+        
+        # 현재 평가
+        current = detector.get_current_assessment(df)
+        
+        # 상단 메트릭
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            risk_emoji = {"Normal": "🟢", "Elevated": "🟡", "High": "🔴"}
+            st.metric(
+                "위험 등급",
+                current['risk_level'],
+                delta=None,
+                delta_color="inverse"
+            )
+            st.markdown(f"### {risk_emoji.get(current['risk_level'], '⚪')}")
+        
+        with col2:
+            st.metric(
+                "폭락 확률 (20일)",
+                f"{current['probability']:.1%}"
+            )
+            # 게이지 차트
+            fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=current['probability'] * 100,
+                domain={'x': [0, 1], 'y': [0, 1]},
+                gauge={
+                    'axis': {'range': [0, 100]},
+                    'bar': {'color': "darkred" if current['probability'] > 20 else "orange" if current['probability'] > 10 else "green"},
+                    'steps': [
+                        {'range': [0, 10], 'color': "lightgreen"},
+                        {'range': [10, 20], 'color': "yellow"},
+                        {'range': [20, 100], 'color': "lightcoral"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "red", 'width': 4},
+                        'thickness': 0.75,
+                        'value': detector.threshold * 100
+                    }
                 }
-            }
-        ))
-        fig_gauge.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20))
-        st.plotly_chart(fig_gauge, width="stretch")
-    
-    with col3:
-        st.metric(
-            "권장 주식 비중",
-            f"{current['equity_weight']:.0%}"
-        )
-        # 파이 차트
-        fig_pie = go.Figure(data=[go.Pie(
-            labels=['주식', '현금/채권'],
-            values=[current['equity_weight'], 1 - current['equity_weight']],
-            marker_colors=['steelblue', 'lightgray']
+            ))
+            fig_gauge.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20))
+            st.plotly_chart(fig_gauge, width="stretch")
+        
+        with col3:
+            st.metric(
+                "권장 주식 비중",
+                f"{current['equity_weight']:.0%}"
+            )
+            # 파이 차트
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=['주식', '현금/채권'],
+                values=[current['equity_weight'], 1 - current['equity_weight']],
+                marker_colors=['steelblue', 'lightgray']
+            )])
+            fig_pie.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20), showlegend=False)
+            st.plotly_chart(fig_pie, width="stretch")
+        
+        st.markdown("---")
+        
+        # 주요 신호 강도
+        st.subheader("📡 현재 신호 강도 (Top 7)")
+        current_features = df.drop('crash', axis=1).iloc[-1]
+        
+        # [수정] 모니터링 핵심 지표 Top 7 (Private Credit은 Tab 2로 갔지만, 전체 비교를 위해 남겨둘 수도 있고 뺄 수도 있음. 
+        # 사용자가 "Feature Importance 차트에서 private_credit이 사라진 것을 확인하세요!"라고 했지만, 
+        # 여기는 Signal Chart임. AI가 안쓰더라도 신호 자체는 존재함. 일단 둠.)
+        base_features = [
+            'volatility', 'bond_stress', 'eco_surprise', 
+            'fx_carry', 'private_credit', 'net_liquidity', 'hmm_strain'
+        ]
+        
+        feature_values = {feat: current_features[feat] for feat in base_features if feat in current_features}
+        
+        fig_bar = go.Figure([go.Bar(
+            x=list(feature_values.keys()),
+            y=list(feature_values.values()),
+            marker_color=['red' if v > 1 else 'orange' if v > 0.5 else 'green' for v in feature_values.values()],
+            text=[f"{v:.2f}" for v in feature_values.values()],
+            textposition='auto'
         )])
-        fig_pie.update_layout(height=200, margin=dict(l=20, r=20, t=20, b=20), showlegend=False)
-        st.plotly_chart(fig_pie, width="stretch")
-    
-    st.markdown("---")
-    
-    # 주요 신호 강도
-    st.subheader("📡 현재 신호 강도 (Top 7)")
-    current_features = df.drop('crash', axis=1).iloc[-1]
-    
-    # [수정] 모니터링 핵심 지표 Top 7
-    base_features = [
-        'volatility', 'bond_stress', 'eco_surprise', 
-        'fx_carry', 'private_credit', 'net_liquidity', 'hmm_strain'
-    ]
-    
-    feature_values = {feat: current_features[feat] for feat in base_features if feat in current_features}
-    
-    fig_bar = go.Figure([go.Bar(
-        x=list(feature_values.keys()),
-        y=list(feature_values.values()),
-        marker_color=['red' if v > 1 else 'orange' if v > 0.5 else 'green' for v in feature_values.values()],
-        text=[f"{v:.2f}" for v in feature_values.values()],
-        textposition='auto'
-    )])
-    fig_bar.update_layout(
-        title="신호 강도 (Z-score)",
-        xaxis_title="Feature",
-        yaxis_title="값",
-        height=400
-    )
-    st.plotly_chart(fig_bar, width="stretch")
+        fig_bar.update_layout(
+            title="신호 강도 (Z-score)",
+            xaxis_title="Feature",
+            yaxis_title="값",
+            height=400
+        )
+        st.plotly_chart(fig_bar, width="stretch")
+
+    # ==========================================================================
+    # [TAB 2] 사모신용 전용 모니터링 페이지
+    # ==========================================================================
+    with tab2:
+        st.subheader("☠️ Private Credit Stress Monitor")
+        st.markdown("""
+        **"보이지 않는 위험"을 감시합니다.** 이 지표는 AI 학습에는 빠져있지만, **구조적 위기의 '트리거'**가 될 수 있으므로 별도 관찰이 필요합니다.
+        """)
+        
+        # 1. 최신 상태 표시
+        if 'private_credit' in df.columns:
+            curr_pc_stress = df['private_credit'].iloc[-1]
+            curr_pc_context = df['context_private_credit'].iloc[-1]
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Private Credit Stress (Z-score)", f"{curr_pc_stress:.2f}", 
+                        delta="위험" if curr_pc_stress > 1.0 else "안정", delta_color="inverse")
+            col2.metric("Weighted Impact (Context)", f"{curr_pc_context:.2f}")
+            
+            # 2. 사모신용 전용 차트 그리기
+            # TCPC(사모) vs HYG(공모) 괴리율 시각화
+            fig_pc = go.Figure()
+            
+            # 메인: 사모신용 스트레스 지수
+            fig_pc.add_trace(go.Scatter(
+                x=df.index, y=df['private_credit'],
+                mode='lines', name='Private Credit Stress',
+                line=dict(color='red', width=2)
+            ))
+            
+            # 보조: 시장 위험 임계선
+            fig_pc.add_hline(y=1.0, line_dash="dash", line_color="orange", annotation_text="Warning (1.0)")
+            fig_pc.add_hline(y=2.0, line_dash="dash", line_color="darkred", annotation_text="Critical (2.0)")
+            
+            fig_pc.update_layout(
+                title='TCPC(Private) vs HYG(Public) Divergence Stress',
+                height=500,
+                template='plotly_white'
+            )
+            st.plotly_chart(fig_pc, use_container_width=True)
+            
+            st.info("""
+            **💡 해석 가이드:**
+            * **스트레스 > 1.0:** 사모 대출 자산(TCPC)의 가격이 공모 채권(HYG)보다 비정상적으로 하락 중.
+            * **스트레스 > 2.0:** 유동성 위기 징후. 사모펀드 환매 중단 가능성 염두.
+            * 이 지표가 튀어 오를 때, 메인 탭의 '현금 유동성(Net Liquidity)'이 마르고 있다면 **즉시 탈출**하십시오.
+            """)
+        else:
+            st.error("사모신용 데이터가 계산되지 않았습니다. back.py를 확인하세요.")
 
 # ==========================================
 # Page 2: Backtest 결과

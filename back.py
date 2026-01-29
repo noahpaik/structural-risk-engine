@@ -1219,7 +1219,10 @@ class StructuralRiskDetector2026:
         # 1. 데이터 준비 (라벨 있는 것만)
         df_labeled = df.dropna(subset=['crash']).sort_index()
         
-        X = df_labeled.drop(columns=['crash'])
+        # [전략 수정] 사모신용(Private Credit) 제외 학습
+        # 이유: 2008년 이전 데이터 부재로 인한 노이즈 방지
+        drop_cols = ['crash', 'private_credit', 'context_private_credit']
+        X = df_labeled.drop(columns=drop_cols, errors='ignore')
         y = df_labeled['crash']
         
         # 2. 날짜 기준 분할
