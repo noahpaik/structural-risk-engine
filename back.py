@@ -480,7 +480,7 @@ class StructuralRiskDetector2026:
     # LAYER 3.9: FX Carry Risk (Global Shock)
     # ============================================
     
-    def get_fx_carry_risk(self):
+    def get_fx_carry_risk(self, start_date='2002-01-01'):
         """
         [수정] FX Volatility Risk (환율 변동성 위기)
         기존: 엔화 강세 + 주가 하락 (Carry Trade Unwind) -> 이벤트성
@@ -492,7 +492,7 @@ class StructuralRiskDetector2026:
         tickers = ['DX-Y.NYB', 'JPY=X']
         print(f"   [INFO] FX 변동성 데이터 로드 중... ({tickers})")
         
-        fx_data = yf.download(tickers, start=self.start_date, progress=False)['Close']
+        fx_data = yf.download(tickers, start=start_date, progress=False)['Close']
         fx_data = fx_data.ffill().dropna()
 
         # 2. 변동성(Volatility) 계산
