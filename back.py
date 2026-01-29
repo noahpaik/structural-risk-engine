@@ -680,6 +680,101 @@ class StructuralRiskDetector2026:
         return paper_features.fillna(0)
 
     # ============================================
+    # LAYER 3.6: Absorption Ratio (Systemic Risk)
+    # ============================================
+    def get_absorption_ratio(self, start_date):
+        """
+        [Priceless] Absorption Ratio Implementation
+        - 논문: Kritzman et al. (2010), Sheikh Sadik (2024)
+        - 개념: 시장의 모든 자산이 몇 개의 요인(Factor)에 동조화되는가?
+        - AR이 급등하면 시스템 리스크 고조 (시장 붕괴 전조)
+        """
+        print("[INFO] Absorption Ratio(시스템 리스크) 계산 중... (시간 소요됨)")
+        
+        # 1. 9대 섹터 ETF 데이터 로드 (2002년부터 데이터 확보 가능한 종목들)
+        # XLRE(부동산), XLC(통신)은 역사가 짧아서 제외
+        sectors = ['XLE', 'XLF', 'XLU', 'XLI', 'XLK', 'XLV', 'XLY', 'XLP', 'XLB']
+        
+        try:
+            df_sectors = yf.download(sectors, start=start_date, progress=False)
+            if isinstance(df_sectors.columns, pd.MultiIndex):
+                df_sectors.columns = df_sectors.columns.get_level_values(0)
+            
+            # Close 가격 사용 & 전처리
+            if 'Close' in df_sectors.columns: # 단일 종목일 경우 안 걸리겠지만 안전하게
+                prices = df_sectors['Close']
+            else:
+                prices = df_sectors
+                
+            # 수익률 변환
+            returns = prices.pct_change().fillna(0)
+            
+            # 2. Rolling Window 설정 (논문 기준: 504일, 약 2년)
+            window = 504 
+            
+            # 3. Absorption Ratio 계산
+            # AR = (상위 n개 고유값의 합) / (전체 고유값의 합)
+            # 여기서는 n=2 (상위 2개 요인이 설명하는 비중)
+            
+            ar_series = []
+            
+            # 최적화를 위해 numpy 배열로 변환
+            ret_values = returns.values
+            dates = returns.index
+            
+            for i in range(len(ret_values)):
+                if i < window:
+                    ar_series.append(np.nan)
+                    continue
+                
+                # window 기간의 수익률
+                sub_rets = ret_values[i-window : i]
+                
+                # 공분산 행렬 계산 (ddof=1 for sample covariance)
+                # 데이터가 비어있지 않은지 확인
+                if np.isnan(sub_rets).any():
+                     # 간단한 fillna
+                     sub_rets = np.nan_to_num(sub_rets)
+
+                # 공분산
+                cov_mat = np.cov(sub_rets, rowvar=False)
+                
+                # 고유값 분해 (Eigen Decomposition)
+                # eigh는 대칭행렬(공분산)용이라 더 빠름
+                eig_vals = np.linalg.eigvalsh(cov_mat)
+                
+                # 정렬 (오름차순이므로 뒤에서부터 가져옴)
+                # 총 변동성 (Total Variance)
+                total_var = np.sum(eig_vals)
+                
+                if total_var == 0:
+                    ar_series.append(0)
+                    continue
+                    
+                # 상위 2개 고유값의 합 (Top 2 Eigenvalues)
+                absorbed_var = np.sum(eig_vals[-2:])
+                
+                ar = absorbed_var / total_var
+                ar_series.append(ar)
+                
+            # Series 변환
+            ar_final = pd.Series(ar_series, index=dates, name='absorption_ratio')
+            
+            # [응용] AR Delta (급등 여부)
+            # 15일 이동평균 - 1년 이동평균 (논문 테크닉: 단기 추세 - 장기 추세)
+            ar_delta = ar_final.rolling(15).mean() - ar_final.rolling(252).mean()
+            ar_delta.name = 'absorption_ratio_delta'
+            
+            ar_df = pd.concat([ar_final, ar_delta], axis=1)
+            
+            print(f"   [OK] Absorption Ratio 계산 완료 (최근 값: {ar_final.iloc[-1]:.4f})")
+            return ar_df.fillna(0)
+            
+        except Exception as e:
+            print(f"[WARN] Absorption Ratio 계산 실패: {e}")
+            return pd.DataFrame()
+
+    # ============================================
     # LAYER 4 (복구): HMM 기반 국면 탐지
     # ============================================
     def get_market_regime_hmm(self, spy_df):
@@ -919,6 +1014,14 @@ class StructuralRiskDetector2026:
         # Timezone 정리
         if paper_dfs.index.tz is not None: paper_dfs.index = paper_dfs.index.tz_localize(None)
 
+        # [NEW] Absorption Ratio 계산
+        ar_dfs = self.get_absorption_ratio(start_date)
+        if ar_dfs.index.tz is not None: ar_dfs.index = ar_dfs.index.tz_localize(None)
+        
+        # 인덱스 맞추기/reindex
+        ar_dfs = ar_dfs.reindex(spy_close.index).ffill()
+
+
         # ==============================================================================
         # [NEW] 사모신용(Private Credit) 스트레스 - TCPC 중심
         # 논리: "공모 하이일드(HYG)는 버티는데, 사모 대출(TCPC) 가격이 무너지면 구조적 위기다."
@@ -1093,6 +1196,10 @@ class StructuralRiskDetector2026:
             'kt_252': paper_dfs['ret_kurt_252'], # Long-term Kurtosis
             'corr_bond': paper_dfs['corr_spy_tlt'],
             'corr_vix': paper_dfs['corr_spy_vix'],
+            
+            # [NEW] Absorption Ratio (Systemic Risk)
+            'absorb_ratio': ar_dfs['absorption_ratio'],
+            'absorb_delta': ar_dfs['absorption_ratio_delta'],
             
             # 'hmm_stress': is_stress.astype(int) <-- [삭제] 이걸 넣으면 뒷북칩니다.
         }).sort_index().ffill().dropna()
