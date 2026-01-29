@@ -1201,10 +1201,10 @@ class StructuralRiskDetector2026:
     
     def train_model(self, df, split_date='2024-01-01'):
         """
-        [최종 튜닝] Ensemble Model (Balanced)
-        - AUC 0.80 이상을 유지하면서 Recall을 확보하는 균형 설정
-        - Threshold 현실화 (0.60 -> 0.25)
-        - 모델 규제 완화 (너무 겁먹지 않게)
+        [Golden Mode] Recall-Oriented Ensemble (실전용)
+        - 목표: Recall > 70% (폭락 감지 최우선), Precision 30% 방어
+        - Metric: 'recall' 최적화
+        - Threshold: 0.35 (적절한 경보 민감도)
         - [유지] Hold-out Validation (split_date 기준) to prevent app crash
         """
         from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
@@ -1213,7 +1213,7 @@ class StructuralRiskDetector2026:
         from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score, confusion_matrix, roc_auc_score
         
         print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 ({split_date} 기준 Hold-out 검증 - Balanced Mode)")
+        print(f"[AI] 모델 학습 시작 ({split_date} 기준 Hold-out 검증 - Golden Mode)")
         
         # 1. 데이터 준비 (라벨 있는 것만)
         df_labeled = df.dropna(subset=['crash']).sort_index()
@@ -1241,41 +1241,43 @@ class StructuralRiskDetector2026:
         tscv = TimeSeriesSplit(n_splits=3)
         
         # ======================================================================
-        # [Model 1] Random Forest (규제 완화)
+        # [Model 1] Random Forest (Golden Mode: Recall 중시)
         # ======================================================================
         rf_params = {
             'n_estimators': [200, 500],
-            'max_depth': [10, 20, None],  # [수정] 깊이 제한을 조금 품 (더 똑똑하게)
-            'min_samples_leaf': [0.01, 0.05], # [수정] 잎사귀 크기 줄임 (디테일 감지)
+            'max_depth': [10, 20, None],  # 깊게 탐색 허용
+            'min_samples_leaf': [0.01, 0.05],
             'max_features': ['sqrt'],
-            'class_weight': ['balanced']
+            'class_weight': ['balanced', 'balanced_subsample'] # 폭락 데이터에 가중치
         }
         
-        print("\n[Training] 1. Random Forest (Balanced) 최적화 중...")
+        print("\n[Training] 1. Random Forest (Recall Optimized) 최적화 중...")
         rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
-        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
+        # Scoring을 'recall'로 변경하여 감지율 극대화
+        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=5, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
         rf_search.fit(X_train, y_train)
         best_rf = rf_search.best_estimator_
         
         # ======================================================================
-        # [Model 2] XGBoost (규제 완화)
+        # [Model 2] XGBoost (Golden Mode: 가중치 강화)
         # ======================================================================
-        # Class Weight 계산 (Scale Pos Weight)
+        # Class Weight 계산
         neg, pos = np.bincount(y_train)
         scale_pos_weight = neg / pos if pos > 0 else 1.0
         
         xgb_params = {
             'n_estimators': [100, 200, 300],
-            'learning_rate': [0.05, 0.1],  # [수정] 학습 속도 정상화 (너무 느리면 못 배움)
-            'max_depth': [3, 5, 7],        # [수정] 깊이 약간 증가
-            'subsample': [0.8, 1.0],
-            'colsample_bytree': [0.8, 1.0],
-            'scale_pos_weight': [3, 5]     # [수정] 폭락(1)에 가중치 더 부여
+            'learning_rate': [0.05, 0.1],
+            'max_depth': [3, 5, 7],
+            'subsample': [0.7, 1.0],
+            'colsample_bytree': [0.7, 1.0],
+            'scale_pos_weight': [scale_pos_weight * 1, scale_pos_weight * 3] # [핵심] 가중치를 1~3배 더 강하게 부여
         }
         
-        print("[Training] 2. XGBoost (Balanced) 최적화 중...")
+        print("[Training] 2. XGBoost (Recall Optimized) 최적화 중...")
         xgb_base = XGBClassifier(eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
-        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
+        # Scoring을 'recall'로 변경
+        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=5, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
         xgb_search.fit(X_train, y_train)
         best_xgb = xgb_search.best_estimator_
         
@@ -1294,14 +1296,13 @@ class StructuralRiskDetector2026:
         # 전체 학습 데이터로 재학습
         voting_clf.fit(X_train, y_train)
         
-        print(f"   >>> Random Forest Best F1: {rf_search.best_score_:.4f}")
-        print(f"   >>> XGBoost Best F1: {xgb_search.best_score_:.4f}")
+        print(f"   >>> Random Forest Best Recall: {rf_search.best_score_:.4f}")
+        print(f"   >>> XGBoost Best Recall: {xgb_search.best_score_:.4f}")
         
-        # [핵심 수정] Threshold 현실화
-        # 차트상 확률이 0.4~0.5 정도까지 오르므로, 0.25면 충분히 안전하면서도 잘 잡음
-        optimal_threshold = 0.25 
+        # [핵심] Golden Ratio Threshold
+        optimal_threshold = 0.35 
         
-        print(f"   >>> Applied Threshold: {optimal_threshold} (Targeting Recall)")
+        print(f"   >>> Applied Threshold: {optimal_threshold} (Golden Ratio)")
         
         self.model = voting_clf
         self.threshold = optimal_threshold
@@ -1336,9 +1337,6 @@ class StructuralRiskDetector2026:
             y_pred_proba_full = pd.Series(y_pred_proba_full).ewm(span=3).mean().values # 스무딩
             
             # Feature Importances (Voting은 직접 제공 안하므로 RF 기준 근사 or 각자 평균)
-            # 여기서는 편의상 RF의 중요도를 사용하거나 XGB의 중요도를 사용
-            # VotingClassifier는 feature_importances_ 속성이 없으므로 best_rf 사용 시각화
-            # 또는 두 모델 평균
             try:
                 # RF importance
                 rf_imp = best_rf.feature_importances_
