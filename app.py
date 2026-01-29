@@ -65,7 +65,7 @@ def run_training_v48(_detector, df):
         # split_date = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
         # 하지만 안정성을 위해 고정된 날짜 사용 권장 (2023-01-01)
         # [TUNING] Golden Ratio Tuning 시에는 더 긴 검증 구간이 필요할 수 있음
-        _detector.train_model(df, split_date='2023-01-01')
+        _detector.train_model(df, split_date='2025-01-01')
     return _detector
 
 # 모델 및 데이터 로드
@@ -89,8 +89,8 @@ st.sidebar.info(f"""
 **모델 정보**
 - 레이어: 7개
 - 피처: 22개
-- 학습 기간: 2002-2022
-- 검증 기간: 2023-2026
+- 학습 기간: 2002-2024
+- 검증 기간: 2025-2026
 """)
 
 if st.sidebar.button("🔄 데이터 갱신"):
