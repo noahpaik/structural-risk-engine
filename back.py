@@ -1201,9 +1201,9 @@ class StructuralRiskDetector2026:
     
     def train_model(self, df, split_date='2024-01-01'):
         """
-        [긴급 처방] Forced Recall Thresholding (상대평가)
-        - 목표: 모델의 확률값이 낮아도(0.1~0.2), 상위 위험군을 무조건 잡아내서 Recall 60% 이상 강제 달성.
-        - 전략: "확신이 없어도, 남들보다 조금만 더 위험해 보이면 쏴라."
+        [전략 수정] Time-Machine Weighting (2002-2007 Boost)
+        - 사장님 통찰: "2002~2007년(인터넷 성숙기)은 지금(AI 상승기)과 유사하다."
+        - 조치: 해당 기간 데이터에 샘플 가중치(Sample Weight) 3배 적용.
         """
         from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
         from sklearn.ensemble import RandomForestClassifier, VotingClassifier
@@ -1212,16 +1212,29 @@ class StructuralRiskDetector2026:
         import numpy as np
         
         print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 - Forced Recall Strategy (Target: 70%)")
+        print(f"[AI] 모델 학습 시작 - Time-Machine Weighting (2002-2007 Boost)")
         
         # 1. 데이터 준비 (사모신용 제외 유지)
         df_labeled = df.dropna(subset=['crash']).sort_index()
         
         # [전략 수정] 사모신용(Private Credit) 제외 학습
-        # [추가] 파생 변수(Duration, Accel)까지 완벽하게 제거
         drop_cols = ['crash', 'private_credit', 'context_private_credit', 'private_credit_duration', 'private_credit_accel']
         X = df_labeled.drop(columns=drop_cols, errors='ignore')
         y = df_labeled['crash']
+        
+        # ======================================================================
+        # [NEW] 샘플 가중치(Sample Weight) 생성
+        # ======================================================================
+        # 1) 기본 가중치 1.0 설정
+        sample_weights = pd.Series(1.0, index=y.index)
+        
+        # 2) 2002~2007년 구간 3배(3.0) 부스팅
+        # "이 기간은 현재와 비슷하니 더 중요하게 봐라!"
+        boost_mask = (y.index >= '2002-01-01') & (y.index <= '2007-12-31')
+        sample_weights[boost_mask] = 3.0
+        
+        print(f"   >>> 2002~2007 구간 가중치 300% 적용 완료. (해당 데이터 수: {boost_mask.sum()}일)")
+
         
         # 2. 날짜 기준 분할 (Validation용)
         split_ts = pd.Timestamp(split_date)
@@ -1230,11 +1243,14 @@ class StructuralRiskDetector2026:
         X_train, X_test = X[mask_train], X[mask_test]
         y_train, y_test = y[mask_train], y[mask_test]
         
+        # 학습용 가중치도 분리
+        weights_train = sample_weights[mask_train]
+        
         print(f"   학습 데이터: {len(X_train)}개 (Crash: {y_train.sum()}개)")
         
-        # [강화] 불균형 가중치 3배 뻥튀기 (Make it paranoid)
+        # [기존] 클래스 불균형 가중치 (폭락/정상 비율)
         neg, pos = np.bincount(y_train)
-        scale_pos_weight_val = (neg / pos) * 3.0 
+        class_weight_val = (neg / pos) * 3.0 
         
         tscv = TimeSeriesSplit(n_splits=3)
         
@@ -1251,25 +1267,26 @@ class StructuralRiskDetector2026:
         
         print("[Training] 1. Random Forest 최적화 중...")
         rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
-        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=3, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
-        rf_search.fit(X_train, y_train)
+        # Random Forest는 fit에서 sample_weight 지원
+        rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
+        rf_search.fit(X_train, y_train, sample_weight=weights_train) # [중요] 가중치 주입
         best_rf = rf_search.best_estimator_
         
         # ======================================================================
-        # [Model 2] XGBoost (가중치 강화)
+        # [Model 2] XGBoost
         # ======================================================================
         xgb_params = {
             'n_estimators': [100, 200],
             'learning_rate': [0.05, 0.1],
             'max_depth': [3, 5],
             'subsample': [0.8, 1.0],
-            'scale_pos_weight': [scale_pos_weight_val] # 3배 가중치 적용
+            'scale_pos_weight': [class_weight_val] 
         }
         
         print("[Training] 2. XGBoost 최적화 중...")
         xgb_base = XGBClassifier(eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
-        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=3, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
-        xgb_search.fit(X_train, y_train)
+        xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=3, cv=tscv, scoring='f1', n_jobs=-1, random_state=42)
+        xgb_search.fit(X_train, y_train, sample_weight=weights_train) # [중요] 가중치 주입
         best_xgb = xgb_search.best_estimator_
         
         # ======================================================================
@@ -1280,7 +1297,7 @@ class StructuralRiskDetector2026:
             estimators=[('rf', best_rf), ('xgb', best_xgb)],
             voting='soft', weights=[1, 1], n_jobs=-1
         )
-        voting_clf.fit(X_train, y_train)
+        voting_clf.fit(X_train, y_train, sample_weight=weights_train) # Voting도 fit에서 sample_weight 지원
         
         # ======================================================================
         # [핵심] Forced Recall Optimization (Recall 70% 강제 맞춤)
