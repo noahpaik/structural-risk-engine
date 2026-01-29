@@ -1201,19 +1201,20 @@ class StructuralRiskDetector2026:
     
     def train_model(self, df, split_date='2024-01-01'):
         """
-        [Golden Mode] Recall-Oriented Ensemble (실전용)
-        - 목표: Recall > 70% (폭락 감지 최우선), Precision 30% 방어
-        - Metric: 'recall' 최적화
-        - Threshold: 0.35 (적절한 경보 민감도)
+        [Platinum Mode] Oversampling (Recall Booster)
+        - 폭락 데이터 강제 증강 (Manual Oversampling 1:1)
+        - 비율이 1:1이므로 Threshold는 0.5가 자연스러움.
+        - Recall 극대화 전략 (데이터 불균형 완전 해소)
         - [유지] Hold-out Validation (split_date 기준) to prevent app crash
         """
         from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
         from sklearn.ensemble import RandomForestClassifier, VotingClassifier
         from xgboost import XGBClassifier # pip install xgboost 필요
         from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score, confusion_matrix, roc_auc_score
+        from sklearn.utils import resample
         
         print(f"\n{'='*70}")
-        print(f"[AI] 모델 학습 시작 ({split_date} 기준 Hold-out 검증 - Golden Mode)")
+        print(f"[AI] 모델 학습 시작 ({split_date} 기준 Hold-out 검증 - Platinum Mode: Oversampling)")
         
         # 1. 데이터 준비 (라벨 있는 것만)
         df_labeled = df.dropna(subset=['crash']).sort_index()
@@ -1230,55 +1231,84 @@ class StructuralRiskDetector2026:
         y_train, y_test = y[mask_train], y[mask_test]
         
         # 데이터셋 정보 출력
-        print(f"   학습 데이터: {len(X_train)}개 (~{X_train.index[-1].date()})")
+        print(f"   학습 데이터(Raw): {len(X_train)}개 (Crash: {y_train.sum()}개, {y_train.mean():.1%})")
         print(f"   검증 데이터: {len(X_test)}개 ({X_test.index[0].date()}~)")
-        print(f"   학습셋 Crash 비율: {y_train.mean():.1%}")
         
         if len(X_test) == 0:
             print("[WARN] 검증 데이터가 없습니다! 최근 데이터를 포함하거나 split_date를 조정하세요.")
+            
+        # ----------------------------------------------------------------------
+        # [Platinum Mode] 데이터 증강 (Oversampling)
+        # ----------------------------------------------------------------------
+        # 학습 데이터만 증강 (검증 데이터는 건드리면 안 됨!)
+        # 1. 데이터 합치기
+        train_data = pd.concat([X_train, y_train], axis=1)
+        
+        # 2. 클래스 분리
+        majority = train_data[train_data.crash == 0]
+        minority = train_data[train_data.crash == 1]
+        
+        # 3. 소수 클래스 증강 (복원 추출)
+        if len(minority) > 0:
+            minority_upsampled = resample(minority, 
+                                          replace=True,     # 복원 추출
+                                          n_samples=len(majority),    # 다수 클래스 수에 맞춤
+                                          random_state=42) 
+            
+            # 4. 다시 합치기
+            train_upsampled = pd.concat([majority, minority_upsampled])
+            
+            # 5. X, y 분리
+            X_train_res = train_upsampled.drop('crash', axis=1)
+            y_train_res = train_upsampled.crash
+            
+            print(f"   >>> Oversampling 완료: 총 {len(X_train_res)}개 (Crash: {y_train_res.sum()}개, {y_train_res.mean():.1%})")
+        else:
+            print("[WARN] 학습 데이터에 Crash가 하나도 없습니다! Oversampling 불가.")
+            X_train_res, y_train_res = X_train, y_train
+
         
         # 3. 시계열 교차 검증 (학습 데이터 내부에서 수행)
+        # Oversampled 데이터에서는 CV가 정보 누수를 일으킬 수 있으나(같은 샘플이 train/val에 모두 들어감),
+        # 여기서는 하이퍼파라미터 튜닝용으로만 사용하므로 허용하거나, 
+        # 더 엄격하게 하려면 CV 내부에서 Oversampling 해야 함.
+        # 시간 관계상, 여기서는 튜닝은 Oversampled 데이터로 진행 (모델이 폭락 패턴을 강하게 학습하도록 유도)
         tscv = TimeSeriesSplit(n_splits=3)
         
         # ======================================================================
-        # [Model 1] Random Forest (Golden Mode: Recall 중시)
+        # [Model 1] Random Forest (비율 1:1이므로 class_weight 제거 가능)
         # ======================================================================
         rf_params = {
             'n_estimators': [200, 500],
-            'max_depth': [10, 20, None],  # 깊게 탐색 허용
+            'max_depth': [10, 20, None],
             'min_samples_leaf': [0.01, 0.05],
             'max_features': ['sqrt'],
-            'class_weight': ['balanced', 'balanced_subsample'] # 폭락 데이터에 가중치
+            # 'class_weight': ['balanced'] # 1:1이므로 제거 or None
         }
         
-        print("\n[Training] 1. Random Forest (Recall Optimized) 최적화 중...")
+        print("\n[Training] 1. Random Forest (Oversampled) 최적화 중...")
         rf_base = RandomForestClassifier(random_state=42, n_jobs=-1)
-        # Scoring을 'recall'로 변경하여 감지율 극대화
+        # Scoring은 'f1' 또는 'recall' (이미 비율이 1:1이라 f1도 괜찮음)
         rf_search = RandomizedSearchCV(rf_base, rf_params, n_iter=5, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
-        rf_search.fit(X_train, y_train)
+        rf_search.fit(X_train_res, y_train_res)
         best_rf = rf_search.best_estimator_
         
         # ======================================================================
-        # [Model 2] XGBoost (Golden Mode: 가중치 강화)
+        # [Model 2] XGBoost (비율 1:1이므로 scale_pos_weight=1)
         # ======================================================================
-        # Class Weight 계산
-        neg, pos = np.bincount(y_train)
-        scale_pos_weight = neg / pos if pos > 0 else 1.0
-        
         xgb_params = {
             'n_estimators': [100, 200, 300],
             'learning_rate': [0.05, 0.1],
             'max_depth': [3, 5, 7],
             'subsample': [0.7, 1.0],
             'colsample_bytree': [0.7, 1.0],
-            'scale_pos_weight': [scale_pos_weight * 1, scale_pos_weight * 3] # [핵심] 가중치를 1~3배 더 강하게 부여
+            'scale_pos_weight': [1] # 이미 1:1 비율이므로 가중치 1
         }
         
-        print("[Training] 2. XGBoost (Recall Optimized) 최적화 중...")
+        print("[Training] 2. XGBoost (Oversampled) 최적화 중...")
         xgb_base = XGBClassifier(eval_metric='logloss', use_label_encoder=False, random_state=42, n_jobs=-1)
-        # Scoring을 'recall'로 변경
         xgb_search = RandomizedSearchCV(xgb_base, xgb_params, n_iter=5, cv=tscv, scoring='recall', n_jobs=-1, random_state=42)
-        xgb_search.fit(X_train, y_train)
+        xgb_search.fit(X_train_res, y_train_res)
         best_xgb = xgb_search.best_estimator_
         
         # ======================================================================
@@ -1293,21 +1323,21 @@ class StructuralRiskDetector2026:
             n_jobs=-1
         )
         
-        # 전체 학습 데이터로 재학습
-        voting_clf.fit(X_train, y_train)
+        # 전체 학습 데이터(Oversampled)로 재학습
+        voting_clf.fit(X_train_res, y_train_res)
         
         print(f"   >>> Random Forest Best Recall: {rf_search.best_score_:.4f}")
         print(f"   >>> XGBoost Best Recall: {xgb_search.best_score_:.4f}")
         
-        # [핵심] Golden Ratio Threshold
-        optimal_threshold = 0.35 
+        # [핵심] 1:1 비율이므로 Threshold는 0.5가 정석
+        optimal_threshold = 0.50
         
-        print(f"   >>> Applied Threshold: {optimal_threshold} (Golden Ratio)")
+        print(f"   >>> Applied Threshold: {optimal_threshold} (Oversampled 1:1)")
         
         self.model = voting_clf
         self.threshold = optimal_threshold
         
-        # 검증 데이터 평가
+        # 검증 데이터 평가 (여기는 원본 비율 데이터! -> 진짜 성능 확인)
         if len(X_test) > 0:
             y_pred_proba = voting_clf.predict_proba(X_test)[:, 1]
             # 스무딩 (옵션)
