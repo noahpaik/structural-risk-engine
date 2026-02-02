@@ -82,8 +82,7 @@ class StructuralRiskDetector2026:
                  print("[WARN] 필수 데이터(VIX) 누락")
                  return pd.Series()
 
-            # Term Structure Ratio (핵심)
-            
+           
             # Term Structure Ratio (핵심)
             term_ratio = vix / vix3m
             backwardation = (term_ratio > 1.0).astype(float)
@@ -628,6 +627,131 @@ class StructuralRiskDetector2026:
             print(f"   (FRED API 키가 필요하거나 데이터 접근 불가)")
             return pd.Series()
     
+    # ============================================
+    # LAYER 3.96: Private Credit Indicators
+    # ============================================
+    
+    def get_private_credit_indicators(self, start_date='2023-01-01'):
+        """
+        사모신용(Private Credit) 위험 지표 계산
+        
+        목표: BDC(TCPC)와 하이일드(HYG) 데이터를 활용하여 
+              사모대출 시장의 구조적 위험을 감지
+        
+        지표 1: Discount to NAV (순자산가치 대비 할인율)
+        지표 2: Relative Yield Spread (상대적 수익률 스프레드)
+        """
+        print("[INFO] 사모신용 지표 계산 중...")
+        
+        try:
+            # ==========================================
+            # 1. 데이터 다운로드 (TCPC, HYG)
+            # ==========================================
+            tickers = ['TCPC', 'HYG']
+            data = yf.download(tickers, start=start_date, progress=False)
+            
+            # MultiIndex 처리
+            if isinstance(data.columns, pd.MultiIndex):
+                prices = data['Close']
+            else:
+                prices = data
+            
+            # Timezone 제거
+            if prices.index.tz is not None:
+                prices.index = prices.index.tz_localize(None)
+            
+            # ==========================================
+            # 2. NAV 하드코딩 (최신 분기 기준)
+            # ==========================================
+            # TCPC의 NAV는 분기 보고서에서 확인 가능
+            # 사용자가 최신 분기 보고서 발표 시 업데이트 필요
+            tcpc_nav_latest = 16.50  # 2024 Q4 기준 (예시값)
+            
+            print(f"  [INFO] TCPC NAV (하드코딩): ${tcpc_nav_latest:.2f}")
+            
+            # ==========================================
+            # 3. 지표 1: Discount to NAV 계산
+            # ==========================================
+            # 공식: (1 - (TCPC 종가 / NAV)) * 100
+            # 양수: 할인 (NAV보다 저렴하게 거래)
+            # 음수: 프리미엄 (NAV보다 비싸게 거래)
+            
+            tcpc_price = prices['TCPC']
+            discount_to_nav = (1 - (tcpc_price / tcpc_nav_latest)) * 100
+            
+            # 5일 이동평균
+            discount_to_nav_5d = discount_to_nav.rolling(5).mean()
+            
+            print(f"  [OK] Discount to NAV 계산 완료 (현재: {discount_to_nav.iloc[-1]:.2f}%)")
+            
+            # ==========================================
+            # 4. 지표 2: Relative Yield Spread 계산
+            # ==========================================
+            # 배당수익률 = 지난 12개월 배당금 / 현재 주가
+            
+            # TCPC 배당 데이터 가져오기
+            tcpc_ticker = yf.Ticker('TCPC')
+            tcpc_dividends = tcpc_ticker.dividends
+            
+            # HYG 배당 데이터 가져오기
+            hyg_ticker = yf.Ticker('HYG')
+            hyg_dividends = hyg_ticker.dividends
+            
+            # Timezone 제거
+            if tcpc_dividends.index.tz is not None:
+                tcpc_dividends.index = tcpc_dividends.index.tz_localize(None)
+            if hyg_dividends.index.tz is not None:
+                hyg_dividends.index = hyg_dividends.index.tz_localize(None)
+            
+            # 일별 배당수익률 계산 (Trailing 12M)
+            # 각 날짜에 대해 과거 12개월 배당금 합계를 계산
+            
+            # 인덱스를 prices와 맞추기 위해 reindex
+            tcpc_div_daily = tcpc_dividends.reindex(tcpc_price.index).fillna(0)
+            hyg_div_daily = hyg_dividends.reindex(prices['HYG'].index).fillna(0)
+            
+            # Rolling 12개월(252영업일) 배당금 합계
+            tcpc_trailing_div = tcpc_div_daily.rolling(252, min_periods=1).sum()
+            hyg_trailing_div = hyg_div_daily.rolling(252, min_periods=1).sum()
+            
+            # 배당수익률 = 배당금 / 현재 주가
+            tcpc_div_yield = (tcpc_trailing_div / tcpc_price) * 100
+            hyg_div_yield = (hyg_trailing_div / prices['HYG']) * 100
+            
+            # Yield Spread = TCPC 배당수익률 - HYG 배당수익률
+            yield_spread = tcpc_div_yield - hyg_div_yield
+            
+            # 50일 이동평균
+            yield_spread_50d = yield_spread.rolling(50).mean()
+            
+            print(f"  [OK] TCPC 배당수익률: {tcpc_div_yield.iloc[-1]:.2f}%")
+            print(f"  [OK] HYG 배당수익률: {hyg_div_yield.iloc[-1]:.2f}%")
+            print(f"  [OK] Yield Spread: {yield_spread.iloc[-1]:.2f}%")
+            
+            # ==========================================
+            # 5. 결과 반환
+            # ==========================================
+            result = pd.DataFrame({
+                'discount_to_nav': discount_to_nav,
+                'discount_to_nav_5d': discount_to_nav_5d,
+                'yield_spread': yield_spread,
+                'yield_spread_50d': yield_spread_50d,
+                'tcpc_div_yield': tcpc_div_yield,
+                'hyg_div_yield': hyg_div_yield,
+                'tcpc_price': tcpc_price,
+                'hyg_price': prices['HYG']
+            })
+            
+            print(f"[OK] 사모신용 지표: {len(result)} 포인트")
+            return result
+            
+        except Exception as e:
+            print(f"[ERROR] 사모신용 지표 계산 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            return pd.DataFrame()
+    
+
     # ============================================
     # LAYER 3.5: Paper Alignment Features (Sheikh Sadik 2024)
     # ============================================

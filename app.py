@@ -234,49 +234,195 @@ if page == "🏠 Home - 현재 위험":
     with tab2:
         st.subheader("☠️ Private Credit Stress Monitor")
         st.markdown("""
-        **"보이지 않는 위험"을 감시합니다.** 이 지표는 AI 학습에는 빠져있지만, **구조적 위기의 '트리거'**가 될 수 있으므로 별도 관찰이 필요합니다.
+        **"보이지 않는 위험"을 감시합니다.** 사모대출 시장(TCPC)과 공모 하이일드 채권(HYG)의 괴리를 통해 구조적 위기 징후를 포착합니다.
         """)
         
-        # 1. 최신 상태 표시
-        if 'private_credit' in df.columns:
-            curr_pc_stress = df['private_credit'].iloc[-1]
-            curr_pc_context = df['context_private_credit'].iloc[-1]
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Private Credit Stress (Z-score)", f"{curr_pc_stress:.2f}", 
-                        delta="위험" if curr_pc_stress > 1.0 else "안정", delta_color="inverse")
-            col2.metric("Weighted Impact (Context)", f"{curr_pc_context:.2f}")
-            
-            # 2. 사모신용 전용 차트 그리기
-            # TCPC(사모) vs HYG(공모) 괴리율 시각화
-            fig_pc = go.Figure()
-            
-            # 메인: 사모신용 스트레스 지수
-            fig_pc.add_trace(go.Scatter(
-                x=df.index, y=df['private_credit'],
-                mode='lines', name='Private Credit Stress',
-                line=dict(color='red', width=2)
-            ))
-            
-            # 보조: 시장 위험 임계선
-            fig_pc.add_hline(y=1.0, line_dash="dash", line_color="orange", annotation_text="Warning (1.0)")
-            fig_pc.add_hline(y=2.0, line_dash="dash", line_color="darkred", annotation_text="Critical (2.0)")
-            
-            fig_pc.update_layout(
-                title='TCPC(Private) vs HYG(Public) Divergence Stress',
-                height=500,
-                template='plotly_white'
-            )
-            st.plotly_chart(fig_pc, use_container_width=True)
-            
-            st.info("""
-            **💡 해석 가이드:**
-            * **스트레스 > 1.0:** 사모 대출 자산(TCPC)의 가격이 공모 채권(HYG)보다 비정상적으로 하락 중.
-            * **스트레스 > 2.0:** 유동성 위기 징후. 사모펀드 환매 중단 가능성 염두.
-            * 이 지표가 튀어 오를 때, 메인 탭의 '현금 유동성(Net Liquidity)'이 마르고 있다면 **즉시 탈출**하십시오.
-            """)
-        else:
-            st.error("사모신용 데이터가 계산되지 않았습니다. back.py를 확인하세요.")
+        # 사모신용 지표 계산
+        with st.spinner('사모신용 지표 계산 중...'):
+            try:
+                pc_indicators = detector.get_private_credit_indicators(start_date='2023-01-01')
+                
+                if not pc_indicators.empty:
+                    # 최근 값 가져오기
+                    current_discount = pc_indicators['discount_to_nav'].iloc[-1]
+                    discount_5d = pc_indicators['discount_to_nav_5d'].iloc[-1]
+                    current_spread = pc_indicators['yield_spread'].iloc[-1]
+                    spread_50d = pc_indicators['yield_spread_50d'].iloc[-1]
+                    tcpc_yield = pc_indicators['tcpc_div_yield'].iloc[-1]
+                    hyg_yield = pc_indicators['hyg_div_yield'].iloc[-1]
+                    
+                    # ======================
+                    # 1. 메트릭 카드 (상단)
+                    # ======================
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # Discount to NAV 메트릭
+                        discount_delta = current_discount - discount_5d
+                        discount_status = "↑ 할인 확대" if discount_delta > 0 else "↓ 할인 축소" if discount_delta < 0 else "→ 변동없음"
+                        
+                        st.metric(
+                            "📊 Discount to NAV",
+                            f"{current_discount:.2f}%",
+                            delta=f"5일 평균: {discount_5d:.2f}%",
+                            help="TCPC 주가가 순자산가치(NAV) 대비 얼마나 할인되어 거래되고 있는지 나타냅니다. 양수: 할인, 음수: 프리미엄"
+                        )
+                        
+                        # 할인율 상태 표시
+                        if current_discount > 15:
+                            st.error("⚠️ 극심한 할인 (>15%): 유동성 위기 신호")
+                        elif current_discount > 10:
+                            st.warning("🔶 높은 할인 (>10%): 투자자 신뢰 하락")
+                        elif current_discount > 5:
+                            st.info("ℹ️ 보통 할인 (5-10%): 정상 범위")
+                        else:
+                            st.success("✅ 낮은 할인 (\u003c5%): 양호")
+                    
+                    with col2:
+                        # Yield Spread 메트릭
+                        spread_delta = current_spread - spread_50d
+                        spread_status = "↑ 스프레드 확대" if spread_delta > 0 else "↓ 스프레드 축소" if spread_delta < 0 else "→ 변동없음"
+                        
+                        st.metric(
+                            "💰 Yield Spread (TCPC - HYG)",
+                            f"{current_spread:.2f}%",
+                            delta=f"50일 평균: {spread_50d:.2f}%",
+                            help="TCPC의 배당수익률이 HYG보다 얼마나 높은지 나타냅니다. 스프레드가 확대되면 사모대출 위험 프리미엄 증가"
+                        )
+                        
+                        # 스프레드 상태 표시
+                        if current_spread > 8:
+                            st.error("⚠️ 극대 스프레드 (>8%): 사모시장 경색")
+                        elif current_spread > 5:
+                            st.warning("🔶 높은 스프레드 (>5%): 위험 프리미엄 증가")
+                        elif current_spread > 2:
+                            st.info("ℹ️ 보통 스프레드 (2-5%): 정상 범위")
+                        else:
+                            st.success("✅ 낮은 스프레드 (\u003c2%): 안정적")
+                    
+                    st.markdown("---")
+                    
+                    # ======================
+                    # 2. 배당수익률 비교
+                    # ======================
+                    st.subheader("📈 배당수익률 비교 (Trailing 12M)")
+                    
+                    col1, col2 = st.columns(2)
+                    col1.metric("TCPC (사모)", f"{tcpc_yield:.2f}%")
+                    col2.metric("HYG (공모)", f"{hyg_yield:.2f}%")
+                    
+                    st.markdown("---")
+                    
+                    # ======================
+                    # 3. 차트 2개 (Discount to NAV, Yield Spread)
+                    # ======================
+                    
+                    # 차트 1: Discount to NAV
+                    st.subheader("📉 Discount to NAV 추이 (최근 1년)")
+                    
+                    fig_discount = go.Figure()
+                    
+                    # 실제 할인율
+                    fig_discount.add_trace(go.Scatter(
+                        x=pc_indicators.index,
+                        y=pc_indicators['discount_to_nav'],
+                        mode='lines',
+                        name='Discount to NAV',
+                        line=dict(color='steelblue', width=2)
+                    ))
+                    
+                    # 5일 이동평균
+                    fig_discount.add_trace(go.Scatter(
+                        x=pc_indicators.index,
+                        y=pc_indicators['discount_to_nav_5d'],
+                        mode='lines',
+                        name='5일 평균',
+                        line=dict(color='orange', width=1, dash='dash')
+                    ))
+                    
+                    # 위험 임계선
+                    fig_discount.add_hline(y=0, line_dash="solid", line_color="gray", annotation_text="NAV (0%)")
+                    fig_discount.add_hline(y=10, line_dash="dash", line_color="orange", annotation_text="주의 (10%)")
+                    fig_discount.add_hline(y=15, line_dash="dash", line_color="red", annotation_text="위험 (15%)")
+                    
+                    fig_discount.update_layout(
+                        title='TCPC Discount to NAV (%)',
+                        xaxis_title='날짜',
+                        yaxis_title='할인율 (%)',
+                        height=400,
+                        hovermode='x unified',
+                        template='plotly_white'
+                    )
+                    
+                    st.plotly_chart(fig_discount, use_container_width=True)
+                    
+                    # 차트 2: Yield Spread
+                    st.subheader("💹 Relative Yield Spread 추이 (최근 1년)")
+                    
+                    fig_spread = go.Figure()
+                    
+                    # 실제 스프레드
+                    fig_spread.add_trace(go.Scatter(
+                        x=pc_indicators.index,
+                        y=pc_indicators['yield_spread'],
+                        mode='lines',
+                        name='Yield Spread',
+                        line=dict(color='darkred', width=2)
+                    ))
+                    
+                    # 50일 이동평균
+                    fig_spread.add_trace(go.Scatter(
+                        x=pc_indicators.index,
+                        y=pc_indicators['yield_spread_50d'],
+                        mode='lines',
+                        name='50일 평균',
+                        line=dict(color='coral', width=1, dash='dash')
+                    ))
+                    
+                    # 위험 임계선
+                    fig_spread.add_hline(y=2, line_dash="dash", line_color="gray", annotation_text="정상 (2%)")
+                    fig_spread.add_hline(y=5, line_dash="dash", line_color="orange", annotation_text="주의 (5%)")
+                    fig_spread.add_hline(y=8, line_dash="dash", line_color="red", annotation_text="위험 (8%)")
+                    
+                    fig_spread.update_layout(
+                        title='TCPC - HYG Yield Spread (%)',
+                        xaxis_title='날짜',
+                        yaxis_title='스프레드 (%)',
+                        height=400,
+                        hovermode='x unified',
+                        template='plotly_white'
+                    )
+                    
+                    st.plotly_chart(fig_spread, use_container_width=True)
+                    
+                    # ======================
+                    # 4. 해석 가이드
+                    # ======================
+                    st.info("""
+                    **💡 해석 가이드:**
+                    
+                    **Discount to NAV (할인율)**
+                    * **양수 (+)**: TCPC가 NAV보다 저렴하게 거래 (할인)
+                    * **할인율 \u003e 10%**: 투자자들이 사모대출 자산의 가치를 의심 중
+                    * **할인율 \u003e 15%**: 유동성 위기 또는 신용 사건 임박 가능성
+                    
+                    **Yield Spread (수익률 스프레드)**
+                    * **스프레드 확대**: 사모대출의 위험 프리미엄 증가 (투자자가 더 높은 수익률 요구)
+                    * **스프레드 \u003e 5%**: 사모시장이 공모시장보다 위험하다고 판단
+                    * **스프레드 \u003e 8%**: 사모펀드 환매 중단, 신용 동결 가능성
+                    
+                    **위기 시나리오**  
+                    이 두 지표가 동시에 악화되고 + 메인 탭의 'Net Liquidity'가 마를 때 = **즉시 탈출 신호**
+                    """)
+                    
+                else:
+                    st.error("사모신용 데이터를 계산할 수 없습니다. (TCPC 또는 HYG 데이터 부족)")
+                    
+            except Exception as e:
+                st.error(f"사모신용 지표 계산 오류: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
 
 # ==========================================
 # Page 2: Backtest 결과
