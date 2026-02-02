@@ -38,7 +38,7 @@ class StructuralRiskDetector2026:
         }
         self.model = None
         self.backtest_results = {}
-        self.threshold = 0.5 # Default threshold
+        self.threshold = 0.67  # Fixed threshold (사용자 지정)
         
     # ============================================
     # LAYER 1: 변동성 구조
@@ -1737,29 +1737,29 @@ class StructuralRiskDetector2026:
         y_prob = voting_clf.predict_proba(X_train)[:, 1]
         precisions, recalls, thresholds = precision_recall_curve(y_train, y_prob)
         
-        # 목표 Recall 상향 조정
-        target_recalls = [0.85, 0.75, 0.65]
-        optimal_threshold = 0.10 # 기본값 (매우 낮게 설정)
+        # [사용자 지정] Threshold 고정: 0.67
+        # 기존: Optimal Threshold 자동 계산 (Recall 85% 목표)
+        # 변경: 사용자가 지정한 0.67로 고정
+        fixed_threshold = 0.67
         
-        for target in target_recalls:
-            # Recall 조건을 만족하는 지점들 찾기
-            valid_indices = [i for i, r in enumerate(recalls[:-1]) if r >= target]
-            
-            if len(valid_indices) > 0:
-                # 그 중에서 Precision이 가장 높은 것 선택
-                best_idx = max(valid_indices, key=lambda i: precisions[i])
-                optimal_threshold = thresholds[best_idx]
-                
-                print(f"   >>> 성공! Target Recall {target*100}% 달성.")
-                print(f"   >>> 결정된 Threshold: {optimal_threshold:.5f}")
-                print(f"   >>> 예상 Precision: {precisions[best_idx]*100:.1f}%")
-                break
-        else:
-            print("   >>> [WARN] 목표 Recall 달성 실패. 안전값 0.02 적용 (Paranoid Mode).")
-            optimal_threshold = 0.02
-            
+        print(f"\n[THRESHOLD] 사용자 지정값 적용: {fixed_threshold:.2f} (Optimal 계산 건너뜀)")
+        
+        # 참고용으로 현재 threshold에서의 성능 예측
+        # y_train_balanced, y_pred_proba_train 대신 y_train, y_prob 사용
+        # precisions, recalls, thresholds = precision_recall_curve(y_train_balanced, y_pred_proba_train)
+        
+        # 0.67에 가장 가까운 threshold 찾기
+        if len(thresholds) > 0:
+            # thresholds 배열은 오름차순이 아니므로, 직접 찾거나 정렬 후 이진 탐색
+            # 여기서는 가장 가까운 인덱스를 찾음
+            closest_idx = min(range(len(thresholds)), key=lambda i: abs(thresholds[i] - fixed_threshold))
+            expected_precision = precisions[closest_idx]
+            expected_recall = recalls[closest_idx]
+            print(f"   >>> 예상 Precision: {expected_precision*100:.1f}%")
+            print(f"   >>> 예상 Recall: {expected_recall*100:.1f}%")
+        
         self.model = voting_clf
-        self.threshold = optimal_threshold
+        self.threshold = fixed_threshold
         
         # 검증 데이터 평가 (여기는 원본 비율 데이터! -> 진짜 성능 확인)
         if len(X_test) > 0:
@@ -1767,7 +1767,7 @@ class StructuralRiskDetector2026:
             # 스무딩 (옵션)
             y_pred_proba = pd.Series(y_pred_proba).ewm(span=3).mean().values
             
-            y_pred = (y_pred_proba >= optimal_threshold).astype(int)
+            y_pred = (y_pred_proba >= fixed_threshold).astype(int)
             
             auc = roc_auc_score(y_test, y_pred_proba)
             
@@ -1778,7 +1778,7 @@ class StructuralRiskDetector2026:
                 'f1': f1_score(y_test, y_pred, zero_division=0),
                 'accuracy': accuracy_score(y_test, y_pred),
                 'confusion_matrix': confusion_matrix(y_test, y_pred),
-                'threshold': optimal_threshold,
+                'threshold': fixed_threshold,
                 'y_test': y_test,
                 'y_pred': y_pred,
                 'y_pred_proba': y_pred_proba,
