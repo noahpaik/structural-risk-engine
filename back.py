@@ -1740,7 +1740,7 @@ class StructuralRiskDetector2026:
         # [사용자 지정] Threshold 고정: 0.67
         # 기존: Optimal Threshold 자동 계산 (Recall 85% 목표)
         # 변경: 사용자가 지정한 0.67로 고정
-        fixed_threshold = 0.67
+        fixed_threshold = 0.6
         
         print(f"\n[THRESHOLD] 사용자 지정값 적용: {fixed_threshold:.2f} (Optimal 계산 건너뜀)")
         
