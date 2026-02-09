@@ -8,7 +8,7 @@ from scipy import stats
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, precision_recall_curve, recall_score, precision_score
+from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, precision_recall_curve, recall_score, precision_score, accuracy_score
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta
