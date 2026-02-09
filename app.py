@@ -12,7 +12,7 @@ try:
     importlib.reload(back)
 except:
     pass
-from back import StructuralRiskDetector2026
+from back import StructuralRiskDetector2026, SwingTrader
 
 # 페이지 설정
 st.set_page_config(
@@ -113,7 +113,7 @@ if page == "🏠 Home - 현재 위험":
     st.title("🛡️ Structural Risk Engine (Dual-Core)")
     
     # [NEW] 탭 분리
-    tab1, tab2 = st.tabs(["🚀 메인: 폭락 감지 모델", "🔒 서브: 사모신용(Private Credit)"])
+    tab1, tab2, tab3 = st.tabs(["🚀 메인: 폭락 감지 모델", "🔒 서브: 사모신용(Private Credit)", "📊 스윙 트레이딩 (NEW)"])
     
     # ==========================================================================
     # [TAB 1] 기존 메인 대시보드 (AI 예측)
@@ -423,6 +423,188 @@ if page == "🏠 Home - 현재 위험":
                 import traceback
                 st.code(traceback.format_exc())
 
+    # ==========================================================================
+    # [TAB 3] 스윙 트레이딩 (NEW)
+    # ==========================================================================
+    with tab3:
+        st.subheader("📊 SPY 스윙 트레이딩 (롱/숏)")
+        st.markdown("""
+        **5일 후 SPY 수익률 방향을 예측**하여 롱/숏 신호를 생성합니다.
+        RSI, MACD, 볼린저 밴드 등 단기 기술 지표를 활용합니다.
+        """)
+        
+        # 스윙 트레이더 초기화 및 학습
+        @st.cache_resource
+        def load_swing_trader():
+            swing = SwingTrader()
+            features = swing.get_swing_features(ticker='SPY', start_date='2015-01-01')
+            swing.train_swing_model(features, split_date='2023-01-01')
+            swing.backtest_swing(features)
+            return swing, features
+        
+        with st.spinner('스윙 트레이딩 모델 로딩 중...'):
+            try:
+                swing_trader, swing_features = load_swing_trader()
+                
+                # 현재 신호
+                signal_result = swing_trader.get_swing_signal(swing_features)
+                
+                if signal_result:
+                    # ====================
+                    # 1. 메트릭 카드
+                    # ====================
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        signal_colors = {'LONG': 'green', 'SHORT': 'red', 'NEUTRAL': 'gray'}
+                        st.markdown(f"""
+                        <div style="background-color: {signal_colors.get(signal_result['signal'], 'gray')}; padding: 20px; border-radius: 10px; text-align: center;">
+                            <h2 style="color: white; margin: 0;">{signal_result['emoji']} {signal_result['signal']}</h2>
+                            <p style="color: white; margin: 5px 0 0 0;">현재 신호</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        st.metric(
+                            "5일 상승 확률",
+                            f"{signal_result['probability']:.1%}",
+                            delta=f"RSI: {signal_result['rsi']:.1f}" + (signal_result['rsi_note'] if signal_result['rsi_note'] else "")
+                        )
+                        
+                        # 확률 게이지
+                        fig_proba = go.Figure(go.Indicator(
+                            mode="gauge+number",
+                            value=signal_result['probability'] * 100,
+                            domain={'x': [0, 1], 'y': [0, 1]},
+                            gauge={
+                                'axis': {'range': [0, 100]},
+                                'bar': {'color': "green" if signal_result['probability'] > 0.55 else "red" if signal_result['probability'] < 0.45 else "gray"},
+                                'steps': [
+                                    {'range': [0, 45], 'color': "lightcoral"},
+                                    {'range': [45, 55], 'color': "lightgray"},
+                                    {'range': [55, 100], 'color': "lightgreen"}
+                                ]
+                            }
+                        ))
+                        fig_proba.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10))
+                        st.plotly_chart(fig_proba, use_container_width=True)
+                    
+                    with col3:
+                        # 백테스트 결과
+                        if 'total_return' in swing_trader.backtest_results:
+                            st.metric(
+                                "Paper Trading 수익률",
+                                f"{swing_trader.backtest_results['total_return']:+.1f}%",
+                                delta=f"B&H: {swing_trader.backtest_results['bh_return']:+.1f}%"
+                            )
+                            st.metric(
+                                "승률",
+                                f"{swing_trader.backtest_results['win_rate']:.1f}%",
+                                delta=f"거래: {len(swing_trader.backtest_results.get('trades_df', []))}회"
+                            )
+                    
+                    st.markdown("---")
+                    
+                    # ====================
+                    # 2. 기술 지표 차트
+                    # ====================
+                    st.subheader("📈 기술 지표 분석")
+                    
+                    # 최근 100일 데이터
+                    recent_data = swing_features.iloc[-100:]
+                    
+                    fig_tech = make_subplots(
+                        rows=3, cols=1,
+                        shared_xaxes=True,
+                        vertical_spacing=0.05,
+                        subplot_titles=('SPY 가격', 'RSI (14)', 'MACD'),
+                        row_heights=[0.4, 0.3, 0.3]
+                    )
+                    
+                    # 가격 + 볼린저 밴드
+                    bb_mid = recent_data['close'].rolling(20).mean()
+                    bb_std = recent_data['close'].rolling(20).std()
+                    bb_upper = bb_mid + 2 * bb_std
+                    bb_lower = bb_mid - 2 * bb_std
+                    
+                    fig_tech.add_trace(go.Scatter(x=recent_data.index, y=bb_upper, mode='lines', 
+                                                  line=dict(color='lightblue', width=1), name='BB Upper'), row=1, col=1)
+                    fig_tech.add_trace(go.Scatter(x=recent_data.index, y=bb_lower, mode='lines',
+                                                  line=dict(color='lightblue', width=1), fill='tonexty', 
+                                                  fillcolor='rgba(173,216,230,0.2)', name='BB Lower'), row=1, col=1)
+                    fig_tech.add_trace(go.Scatter(x=recent_data.index, y=recent_data['close'], mode='lines',
+                                                  line=dict(color='black', width=2), name='SPY'), row=1, col=1)
+                    
+                    # RSI
+                    fig_tech.add_trace(go.Scatter(x=recent_data.index, y=recent_data['rsi_14'], mode='lines',
+                                                  line=dict(color='purple', width=2), name='RSI'), row=2, col=1)
+                    fig_tech.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+                    fig_tech.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+                    fig_tech.add_hrect(y0=30, y1=70, fillcolor="gray", opacity=0.1, row=2, col=1)
+                    
+                    # MACD
+                    fig_tech.add_trace(go.Bar(x=recent_data.index, y=recent_data['macd_histogram'], 
+                                              marker_color=['green' if v > 0 else 'red' for v in recent_data['macd_histogram']],
+                                              name='MACD Histogram'), row=3, col=1)
+                    
+                    fig_tech.update_layout(height=600, showlegend=False, hovermode='x unified')
+                    st.plotly_chart(fig_tech, use_container_width=True)
+                    
+                    # ====================
+                    # 3. Paper Trading 자본 곡선
+                    # ====================
+                    if 'equity_df' in swing_trader.backtest_results:
+                        st.subheader("💰 Paper Trading 결과")
+                        
+                        equity_df = swing_trader.backtest_results['equity_df']
+                        close_test = swing_features.loc[equity_df.index, 'close']
+                        
+                        fig_equity = go.Figure()
+                        
+                        # 전략 수익
+                        fig_equity.add_trace(go.Scatter(
+                            x=equity_df.index, y=equity_df['capital'],
+                            mode='lines', name='Strategy',
+                            line=dict(color='darkgreen', width=2)
+                        ))
+                        
+                        # Buy & Hold
+                        bh_equity = 10000 * (close_test / close_test.iloc[0])
+                        fig_equity.add_trace(go.Scatter(
+                            x=bh_equity.index, y=bh_equity,
+                            mode='lines', name='Buy & Hold',
+                            line=dict(color='gray', width=1.5, dash='dash')
+                        ))
+                        
+                        fig_equity.update_layout(
+                            title="자본 곡선 비교 (초기 자본: $10,000)",
+                            xaxis_title="날짜",
+                            yaxis_title="자본 ($)",
+                            height=400,
+                            hovermode='x unified'
+                        )
+                        st.plotly_chart(fig_equity, use_container_width=True)
+                    
+                    # ====================
+                    # 4. 해석 가이드
+                    # ====================
+                    st.info("""
+                    **💡 신호 해석 가이드:**
+                    
+                    🟢 **LONG**: 5일 후 상승 확률 > 55% → 매수 고려
+                    🔴 **SHORT**: 5일 후 상승 확률 < 45% → 매도/숏 고려
+                    ⚪ **NEUTRAL**: 45~55% → 관망 (불확실)
+                    
+                    **주의사항:**
+                    - 이 신호는 **참고용**이며, 투자 조언이 아닙니다.
+                    - 실제 거래 전 **Paper Trading**으로 충분히 테스트하세요.
+                    - 거래 비용(수수료, 슬리피지)은 반영되지 않았습니다.
+                    """)
+                    
+            except Exception as e:
+                st.error(f"스윙 트레이딩 모델 오류: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
 # ==========================================
 # Page 2: Backtest 결과

@@ -13,3 +13,4 @@ __pycache__/
 # IntejliJ / VSCode
 .idea/
 .vscode/
+.aider*

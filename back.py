@@ -2101,6 +2101,501 @@ class StructuralRiskDetector2026:
 
 
 # ============================================
+# SWING TRADING 시스템 (NEW)
+# ============================================
+
+class SwingTrader:
+    """
+    SPY 스윙 트레이딩 시스템 (3-10일)
+    - 목표: 5일 후 수익률 방향 예측
+    - 신호: LONG / SHORT / NEUTRAL
+    - Paper Trading 백테스트 지원
+    """
+    
+    def __init__(self, fred_api_key=None):
+        self.fred = Fred(api_key=fred_api_key) if fred_api_key else None
+        self.model = None
+        self.threshold_long = 0.55   # 롱 진입 기준
+        self.threshold_short = 0.45  # 숏 진입 기준
+        self.lookforward_days = 5    # 예측 기간
+        self.backtest_results = {}
+        
+    # ============================================
+    # 단기 지표 생성
+    # ============================================
+    
+    def get_swing_features(self, ticker='SPY', start_date='2015-01-01'):
+        """
+        스윙 트레이딩용 단기 기술 지표 생성
+        """
+        print(f"[SWING] 단기 지표 계산 중... ({ticker})")
+        
+        # 데이터 다운로드
+        df = yf.download(ticker, start=start_date, progress=False)
+        
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        
+        close = df['Close']
+        high = df['High']
+        low = df['Low']
+        volume = df['Volume']
+        
+        features = pd.DataFrame(index=df.index)
+        
+        # 1. RSI (14일) - 과매수/과매도
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        features['rsi_14'] = 100 - (100 / (1 + rs))
+        
+        # RSI 정규화 (0-100 -> -1~1)
+        features['rsi_signal'] = (features['rsi_14'] - 50) / 50
+        
+        # 2. MACD (12-26-9)
+        ema_12 = close.ewm(span=12, adjust=False).mean()
+        ema_26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema_12 - ema_26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        features['macd_histogram'] = macd_line - signal_line
+        
+        # MACD 정규화
+        features['macd_signal'] = features['macd_histogram'] / close * 100
+        
+        # 3. 볼린저 밴드 (20, 2)
+        bb_mid = close.rolling(20).mean()
+        bb_std = close.rolling(20).std()
+        bb_upper = bb_mid + 2 * bb_std
+        bb_lower = bb_mid - 2 * bb_std
+        
+        # %B (0=하단, 1=상단)
+        features['bb_percent'] = (close - bb_lower) / (bb_upper - bb_lower)
+        
+        # 밴드폭 (변동성 지표)
+        features['bb_width'] = (bb_upper - bb_lower) / bb_mid
+        
+        # 4. 단기 수익률 (1일, 5일, 10일)
+        features['return_1d'] = close.pct_change(1)
+        features['return_5d'] = close.pct_change(5)
+        features['return_10d'] = close.pct_change(10)
+        
+        # 5. 거래량 변화율
+        features['volume_ratio'] = volume / volume.rolling(20).mean()
+        
+        # 6. 가격 vs 이동평균
+        features['price_vs_ma5'] = (close / close.rolling(5).mean() - 1) * 100
+        features['price_vs_ma20'] = (close / close.rolling(20).mean() - 1) * 100
+        
+        # 7. ATR (Average True Range) - 변동성
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        features['atr_ratio'] = true_range.rolling(14).mean() / close
+        
+        # 8. VIX (시장 공포 지수)
+        try:
+            vix = yf.download('^VIX', start=start_date, progress=False)['Close']
+            if isinstance(vix, pd.DataFrame):
+                vix = vix.iloc[:, 0]
+            if vix.index.tz is not None:
+                vix.index = vix.index.tz_localize(None)
+            features['vix'] = vix.reindex(df.index).ffill()
+            features['vix_change'] = features['vix'].pct_change(5)
+        except:
+            features['vix'] = 20
+            features['vix_change'] = 0
+        
+        # 9. 추세 강도 (ADX-like 간소화)
+        features['trend_strength'] = abs(features['return_10d']) / features['atr_ratio'].rolling(10).mean()
+        
+        # 원본 가격 데이터 유지
+        features['close'] = close
+        features['high'] = high
+        features['low'] = low
+        features['volume'] = volume
+        
+        print(f"[OK] 스윙 지표: {len(features)} 포인트, {len(features.columns)}개 변수")
+        
+        return features.dropna()
+    
+    # ============================================
+    # 타겟 생성 (5일 후 방향)
+    # ============================================
+    
+    def create_swing_target(self, features):
+        """
+        5일 후 수익률 방향 (1=상승, 0=하락)
+        """
+        close = features['close']
+        
+        # 5일 후 수익률
+        future_return = close.shift(-self.lookforward_days) / close - 1
+        
+        # 방향 (상승=1, 하락=0)
+        target = (future_return > 0).astype(int)
+        target.name = 'target'
+        
+        return target
+    
+    # ============================================
+    # 모델 학습
+    # ============================================
+    
+    def train_swing_model(self, features, split_date='2023-01-01'):
+        """
+        XGBoost 모델 학습 (균형 가중치)
+        """
+        from sklearn.model_selection import TimeSeriesSplit
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, classification_report
+        
+        print(f"\n{'='*70}")
+        print(f"[SWING] 스윙 트레이딩 모델 학습 시작")
+        print(f"{'='*70}")
+        
+        # 타겟 생성
+        target = self.create_swing_target(features)
+        
+        # 피처 선택 (가격 데이터 제외)
+        exclude_cols = ['close', 'high', 'low', 'volume', 'target']
+        feature_cols = [c for c in features.columns if c not in exclude_cols]
+        
+        X = features[feature_cols]
+        y = target
+        
+        # 결측값 제거
+        valid_idx = X.dropna().index.intersection(y.dropna().index)
+        X = X.loc[valid_idx]
+        y = y.loc[valid_idx]
+        
+        # 날짜 기준 분할
+        split_ts = pd.Timestamp(split_date)
+        X_train = X[X.index < split_ts]
+        X_test = X[X.index >= split_ts]
+        y_train = y[y.index < split_ts]
+        y_test = y[y.index >= split_ts]
+        
+        print(f"   학습 데이터: {len(X_train)}개 (상승: {y_train.sum()}, 하락: {len(y_train)-y_train.sum()})")
+        print(f"   검증 데이터: {len(X_test)}개")
+        
+        # XGBoost 모델
+        model = XGBClassifier(
+            n_estimators=200,
+            max_depth=5,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            eval_metric='logloss',
+            use_label_encoder=False,
+            random_state=42,
+            n_jobs=-1
+        )
+        
+        model.fit(X_train, y_train)
+        
+        # 예측
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+        y_pred = (y_pred_proba > 0.5).astype(int)
+        
+        # 평가
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, zero_division=0)
+        recall = recall_score(y_test, y_pred, zero_division=0)
+        
+        print(f"\n[EVAL] 검증 결과:")
+        print(f"   정확도(Accuracy): {accuracy:.1%}")
+        print(f"   정밀도(Precision): {precision:.1%}")
+        print(f"   재현율(Recall): {recall:.1%}")
+        
+        # 저장
+        self.model = model
+        self.feature_cols = feature_cols
+        
+        self.backtest_results = {
+            'X_test': X_test,
+            'y_test': y_test,
+            'y_pred_proba': y_pred_proba,
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall
+        }
+        
+        # Feature Importance
+        importances = pd.DataFrame({
+            'feature': feature_cols,
+            'importance': model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        print(f"\n[TOP 10] 주요 변수:")
+        for i, row in importances.head(10).iterrows():
+            print(f"   {row['feature']}: {row['importance']:.4f}")
+        
+        self.backtest_results['importances'] = importances
+        
+        return model
+    
+    # ============================================
+    # 현재 신호 생성
+    # ============================================
+    
+    def get_swing_signal(self, features):
+        """
+        현재 신호: LONG / SHORT / NEUTRAL
+        """
+        if self.model is None:
+            print("[WARN] 먼저 모델 학습 필요")
+            return None
+        
+        # 최근 데이터
+        X_current = features[self.feature_cols].iloc[-1:]
+        
+        # 예측
+        proba = self.model.predict_proba(X_current)[0, 1]
+        
+        # 신호 결정
+        if proba >= self.threshold_long:
+            signal = 'LONG'
+            emoji = '🟢'
+        elif proba <= self.threshold_short:
+            signal = 'SHORT'
+            emoji = '🔴'
+        else:
+            signal = 'NEUTRAL'
+            emoji = '⚪'
+        
+        # RSI 보조 확인
+        rsi = features['rsi_14'].iloc[-1]
+        rsi_note = ""
+        if rsi < 30:
+            rsi_note = "(과매도 구간)"
+        elif rsi > 70:
+            rsi_note = "(과매수 구간)"
+        
+        result = {
+            'signal': signal,
+            'emoji': emoji,
+            'probability': proba,
+            'rsi': rsi,
+            'rsi_note': rsi_note,
+            'macd': features['macd_histogram'].iloc[-1],
+            'bb_percent': features['bb_percent'].iloc[-1],
+            'date': features.index[-1]
+        }
+        
+        print(f"\n{'='*70}")
+        print(f"[SWING] 현재 신호 ({result['date'].date()})")
+        print(f"{'='*70}")
+        print(f"   📊 신호: {emoji} {signal}")
+        print(f"   📈 상승 확률: {proba:.1%}")
+        print(f"   📉 RSI(14): {rsi:.1f} {rsi_note}")
+        print(f"   📊 MACD: {result['macd']:.4f}")
+        print(f"   📊 BB%: {result['bb_percent']:.2f}")
+        print(f"{'='*70}\n")
+        
+        return result
+    
+    # ============================================
+    # Paper Trading 백테스트
+    # ============================================
+    
+    def backtest_swing(self, features, initial_capital=10000):
+        """
+        Paper Trading 백테스트
+        - 매수/매도 시뮬레이션
+        - 수익률 계산
+        """
+        if self.model is None:
+            print("[WARN] 먼저 모델 학습 필요")
+            return None
+        
+        print(f"\n{'='*70}")
+        print(f"[PAPER TRADING] 백테스트 시작 (초기 자본: ${initial_capital:,})")
+        print(f"{'='*70}")
+        
+        # 검증 기간 데이터
+        X_test = self.backtest_results['X_test']
+        close_prices = features.loc[X_test.index, 'close']
+        
+        # 전체 예측
+        y_pred_proba = self.model.predict_proba(X_test)[:, 1]
+        
+        # 시뮬레이션
+        capital = initial_capital
+        position = 0  # 0=현금, 1=롱, -1=숏
+        entry_price = 0
+        trades = []
+        equity_curve = []
+        
+        for i, (date, row) in enumerate(X_test.iterrows()):
+            proba = y_pred_proba[i]
+            price = close_prices.loc[date]
+            
+            # 포지션 청산 조건 (5일 후 또는 반대 신호)
+            if position != 0 and len(trades) > 0:
+                days_held = (date - trades[-1]['entry_date']).days
+                
+                # 5일 후 청산
+                if days_held >= self.lookforward_days:
+                    pnl = (price / entry_price - 1) * position
+                    capital *= (1 + pnl)
+                    trades[-1]['exit_date'] = date
+                    trades[-1]['exit_price'] = price
+                    trades[-1]['pnl'] = pnl
+                    position = 0
+            
+            # 새 진입
+            if position == 0:
+                if proba >= self.threshold_long:
+                    position = 1
+                    entry_price = price
+                    trades.append({
+                        'entry_date': date,
+                        'entry_price': price,
+                        'direction': 'LONG',
+                        'proba': proba
+                    })
+                elif proba <= self.threshold_short:
+                    position = -1
+                    entry_price = price
+                    trades.append({
+                        'entry_date': date,
+                        'entry_price': price,
+                        'direction': 'SHORT',
+                        'proba': proba
+                    })
+            
+            equity_curve.append({
+                'date': date,
+                'capital': capital,
+                'position': position
+            })
+        
+        # 결과 분석
+        equity_df = pd.DataFrame(equity_curve).set_index('date')
+        trades_df = pd.DataFrame(trades) if trades else pd.DataFrame()
+        
+        total_return = (capital / initial_capital - 1) * 100
+        
+        # Buy & Hold 비교
+        bh_return = (close_prices.iloc[-1] / close_prices.iloc[0] - 1) * 100
+        
+        # 승률
+        if len(trades_df) > 0 and 'pnl' in trades_df.columns:
+            wins = (trades_df['pnl'] > 0).sum()
+            win_rate = wins / len(trades_df) * 100
+        else:
+            win_rate = 0
+        
+        print(f"\n[결과]")
+        print(f"   💰 최종 자본: ${capital:,.2f}")
+        print(f"   📈 총 수익률: {total_return:+.2f}%")
+        print(f"   📊 Buy & Hold: {bh_return:+.2f}%")
+        print(f"   🎯 초과 수익: {total_return - bh_return:+.2f}%")
+        print(f"   📋 총 거래 수: {len(trades_df)}회")
+        print(f"   ✅ 승률: {win_rate:.1f}%")
+        print(f"{'='*70}\n")
+        
+        self.backtest_results.update({
+            'equity_df': equity_df,
+            'trades_df': trades_df,
+            'total_return': total_return,
+            'bh_return': bh_return,
+            'win_rate': win_rate
+        })
+        
+        return equity_df
+    
+    # ============================================
+    # 시각화
+    # ============================================
+    
+    def plot_swing_results(self, features):
+        """
+        스윙 트레이딩 결과 시각화
+        """
+        if not self.backtest_results:
+            print("[WARN] 먼저 백테스트 실행 필요")
+            return
+        
+        fig, axes = plt.subplots(4, 1, figsize=(16, 12))
+        
+        X_test = self.backtest_results['X_test']
+        y_pred_proba = self.backtest_results['y_pred_proba']
+        close = features.loc[X_test.index, 'close']
+        
+        # 1. 가격 + 신호
+        ax1 = axes[0]
+        ax1.plot(close.index, close, color='black', linewidth=1.5, label='SPY')
+        
+        # 롱/숏 신호 표시
+        long_mask = y_pred_proba >= self.threshold_long
+        short_mask = y_pred_proba <= self.threshold_short
+        
+        ax1.scatter(close.index[long_mask], close.values[long_mask], 
+                   color='green', marker='^', s=30, alpha=0.7, label='LONG')
+        ax1.scatter(close.index[short_mask], close.values[short_mask], 
+                   color='red', marker='v', s=30, alpha=0.7, label='SHORT')
+        
+        ax1.set_title('SPY Price + Trading Signals', fontweight='bold')
+        ax1.legend()
+        ax1.grid(alpha=0.3)
+        
+        # 2. 상승 확률
+        ax2 = axes[1]
+        ax2.plot(X_test.index, y_pred_proba, color='blue', linewidth=1.5)
+        ax2.axhline(self.threshold_long, color='green', linestyle='--', label=f'Long ({self.threshold_long})')
+        ax2.axhline(self.threshold_short, color='red', linestyle='--', label=f'Short ({self.threshold_short})')
+        ax2.fill_between(X_test.index, self.threshold_long, y_pred_proba, 
+                        where=y_pred_proba >= self.threshold_long, alpha=0.3, color='green')
+        ax2.fill_between(X_test.index, self.threshold_short, y_pred_proba,
+                        where=y_pred_proba <= self.threshold_short, alpha=0.3, color='red')
+        ax2.set_title('5-Day Up Probability', fontweight='bold')
+        ax2.set_ylabel('Probability')
+        ax2.legend()
+        ax2.grid(alpha=0.3)
+        
+        # 3. RSI
+        ax3 = axes[2]
+        rsi = features.loc[X_test.index, 'rsi_14']
+        ax3.plot(rsi.index, rsi, color='purple', linewidth=1.5)
+        ax3.axhline(70, color='red', linestyle='--', alpha=0.5)
+        ax3.axhline(30, color='green', linestyle='--', alpha=0.5)
+        ax3.fill_between(rsi.index, 30, 70, alpha=0.1, color='gray')
+        ax3.set_title('RSI (14)', fontweight='bold')
+        ax3.set_ylabel('RSI')
+        ax3.grid(alpha=0.3)
+        
+        # 4. 자본 곡선
+        if 'equity_df' in self.backtest_results:
+            ax4 = axes[3]
+            equity = self.backtest_results['equity_df']['capital']
+            ax4.plot(equity.index, equity, color='darkgreen', linewidth=2, label='Strategy')
+            
+            # Buy & Hold 비교
+            bh_equity = 10000 * (close / close.iloc[0])
+            ax4.plot(bh_equity.index, bh_equity, color='gray', linewidth=1.5, 
+                    linestyle='--', label='Buy & Hold')
+            
+            ax4.set_title('Equity Curve (Paper Trading)', fontweight='bold')
+            ax4.set_ylabel('Capital ($)')
+            ax4.legend()
+            ax4.grid(alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # 저장
+        filename = f'swing_trading_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"[OK] 스윙 트레이딩 차트 저장: {filename}")
+        
+        plt.show()
+
+
+# ============================================
 # 실행
 # ============================================
 
